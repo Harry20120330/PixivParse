@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      1.0.0
+// @version      1.0.1
 // @description  Parse and download Pixiv artworks (original images / batch ZIP).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*

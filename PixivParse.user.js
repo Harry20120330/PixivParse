@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      1.0.0
+// @version      1.0.1
 // @description  Parse and download Pixiv artworks (original images / batch ZIP).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*
@@ -21,9 +21,10 @@
 (function() {
     'use strict';
 
-    // ============================================================
-    // i18n 字典
-    // ============================================================
+    // ========================================
+    // Multilingual UI strings (Chinese/English/Japanese)
+    // Organize all user-facing text and dynamic messages here
+    // ========================================
     const I18N = {
         zh: {
             parse: "解析",
@@ -118,9 +119,10 @@
     };
     const LANG_ORDER = ["zh", "en", "ja"];
 
-    // ============================================================
-    // 语言检测
-    // ============================================================
+    // ========================================
+    // Auto-detect user language based on browser settings or saved preference
+    // Fallback order: saved preference → browser language → English
+    // ========================================
     function detectLang() {
         try {
             const saved = (typeof GM_getValue === 'function')
@@ -129,9 +131,17 @@
             if (saved && I18N[saved]) return saved;
         } catch (e) { /* ignore */ }
 
-        const nav = (navigator.language || "en").toLowerCase();
-        if (nav.startsWith("zh")) return "zh";
-        if (nav.startsWith("ja")) return "ja";
+        const saved = I18N[saved] ? saved : null;
+        if (saved) return saved;
+
+        const codes = (navigator.languages && navigator.languages.length)
+            ? navigator.languages
+            : [navigator.language || "en"];
+        for (const code of codes) {
+            const c = code.toLowerCase();
+            if (c.startsWith("zh")) return "zh";
+            if (c.startsWith("ja")) return "ja";
+        }
         return "en";
     }
 
@@ -151,9 +161,10 @@
         if (fb) fb.textContent = T.parse;
     }
 
-    // ============================================================
-    // 样式注入
-    // ============================================================
+    // ========================================
+    // Inject CSS for UI components (language switcher, modals, buttons)
+    // Dark theme with glassmorphism effects for macOS-like appearance
+    // ========================================
     function injectStyles() {
         if (document.getElementById("pixivParseStyles")) return;
         const style = document.createElement("style");
@@ -225,9 +236,10 @@
         document.head.appendChild(style);
     }
 
-    // ============================================================
-    // 常量
-    // ============================================================
+    // ========================================
+    // Color scheme, HTTP headers, and UI dimensions
+    // Dark theme palette matching modern OS defaults
+    // ========================================
     const CUSTOM_HEADERS = { 'Referer': 'https://www.pixiv.net/' };
     const GITHUB_URL = "https://github.com/Harry20120330/PixivParse/";
 
@@ -240,9 +252,10 @@
     const innerGlowPressed = "inset 0 0 3px rgba(255,255,255,0.06)";
     const accentColor = "#0096fa";
 
-    // ============================================================
-    // 界面开关
-    // ============================================================
+    // ========================================
+    // Manage result page modal lifecycle and cleanup
+    // Ensures proper event listener removal and state reset on close
+    // ========================================
     let activeResultMask = null;
 
     function closeResultPage() {
@@ -255,11 +268,20 @@
             activeResultMask = null;
         }
         activeData = null;
+        // Restore the floating button once the result page is closed
+        injectButton();
     }
 
-    // ============================================================
-    // 悬浮球
-    // ============================================================
+    // ========================================
+    // Create and manage the floating action button
+    // Helper to add tactile press-feedback animation (scales down on tap/click)
+    // ========================================
+    function pressEffect(el, pressDown, pressUp) {
+        el.addEventListener("pointerdown", pressDown);
+        el.addEventListener("pointerup", pressUp);
+        el.addEventListener("pointerleave", pressUp);
+    }
+
     function createFloatingBtn() {
         const btn = document.createElement("button");
         btn.textContent = T.parse;
@@ -280,14 +302,17 @@
             transition: "box-shadow 0.15s, transform 0.15s",
             WebkitTapHighlightColor: "transparent"
         });
-        btn.addEventListener("pointerdown", () => {
-            btn.style.boxShadow = innerGlowPressed;
-            btn.style.transform = "translateY(-50%) scale(0.92)";
-        });
-        btn.addEventListener("pointerup", () => {
-            btn.style.boxShadow = innerGlow;
-            btn.style.transform = "translateY(-50%) scale(1)";
-        });
+        pressEffect(
+            btn,
+            () => {
+                btn.style.boxShadow = innerGlowPressed;
+                btn.style.transform = "translateY(-50%) scale(0.92)";
+            },
+            () => {
+                btn.style.boxShadow = innerGlow;
+                btn.style.transform = "translateY(-50%) scale(1)";
+            }
+        );
         return btn;
     }
 
@@ -339,14 +364,17 @@
             transition: "box-shadow 0.15s, transform 0.15s",
             WebkitTapHighlightColor: "transparent"
         });
-        btn.addEventListener("pointerdown", () => {
-            btn.style.boxShadow = innerGlowPressed;
-            btn.style.transform = "scale(0.98)";
-        });
-        btn.addEventListener("pointerup", () => {
-            btn.style.boxShadow = innerGlow;
-            btn.style.transform = "scale(1)";
-        });
+        pressEffect(
+            btn,
+            () => {
+                btn.style.boxShadow = innerGlowPressed;
+                btn.style.transform = "scale(0.98)";
+            },
+            () => {
+                btn.style.boxShadow = innerGlow;
+                btn.style.transform = "scale(1)";
+            }
+        );
         btn.onclick = callback;
         return btn;
     }
@@ -355,9 +383,18 @@
         GM_download({ url, name: filename, saveAs: false });
     }
 
-    // ============================================================
-    // 数据获取
-    // ============================================================
+    // Extract file extension from Pixiv image URL, removing query parameters
+    // Defaults to 'jpg' if extension cannot be determined
+    function extOf(url) {
+        const seg = String(url).split("/").pop().split("?")[0];
+        const m = seg.match(/\.([a-z0-9]+)$/i);
+        return m ? m[1].toLowerCase() : "jpg";
+    }
+
+    // ========================================
+    // Fetch artwork metadata and image URLs from Pixiv API
+    // Returns title, description, author info, and list of image URLs
+    // ========================================
     async function fetchPixivData() {
         const match = location.href.match(/artworks\/(\d+)/);
         if (!match) throw new Error(T.notArtwork);
@@ -375,23 +412,26 @@
 
         const illust = detail.body;
         const imageUrls = pages.body.map(p => p.urls.original || p.urls.regular);
+        const user = illust.user || {};
 
         return {
             title: illust.illustTitle || illustId,
             desc: illust.illustComment || "",
             author: {
-                name: illust.userName || "",
-                avatar: illust.userImage || "",
-                id: illust.userId || ""
+                name: illust.userName || user.userName || user.name || "",
+                avatar: illust.userImage || user.image || "",
+                id: illust.userId || user.id || ""
             },
             images: imageUrls,
             type: "image"
         };
     }
 
-    // ============================================================
-    // 图片下载（绕过 Referer 防盗链）
-    // ============================================================
+    // ========================================
+    // Download image as Blob with proper Referer header
+    // Required to bypass Pixiv's hotlink protection
+    // Includes timeout handling and error detection
+    // ========================================
     function fetchImageBlob(url) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -413,9 +453,11 @@
         });
     }
 
-    // ============================================================
-    // fflate 流式打包
-    // ============================================================
+    // ========================================
+    // Stream images into ZIP file using fflate library
+    // Downloads images sequentially and monitors success/failure
+    // Auto-triggers browser download upon completion
+    // ========================================
     async function packAndDownload(images, baseName) {
         const loading = showLoadingToast(T.preparing);
 
@@ -444,7 +486,7 @@
 
         for (let i = 0; i < total; i++) {
             const url = images[i];
-            const ext = url.split('.').pop().split('?')[0] || 'jpg';
+            const ext = extOf(url);
             const filename = `${String(i + 1).padStart(3, '0')}.${ext}`;
             const entryName = `${baseName}/${filename}`;
 
@@ -492,9 +534,10 @@
         setTimeout(() => loading.remove(), 2500);
     }
 
-    // ============================================================
-    // 语言下拉菜单
-    // ============================================================
+    // ========================================
+    // Create language switcher dropdown in result page header
+    // Supports Chinese, English, Japanese with visual indicator
+    // ========================================
     function createLangSwitcher(onSwitch) {
         const wrap = document.createElement("div");
         wrap.className = "pixiv-lang-wrap";
@@ -544,9 +587,11 @@
         return wrap;
     }
 
-    // ============================================================
-    // 结果页渲染
-    // ============================================================
+    // ========================================
+    // Render full-screen result modal with artwork details
+    // Displays: title, description, author card, gallery, and download buttons
+    // Language switcher auto-refreshes page and preserves scroll position
+    // ========================================
     function renderResultPage(data) {
         closeResultPage();
         activeData = data;
@@ -562,7 +607,7 @@
 
         activeResultMask = mask;
 
-        // ---- 顶部栏 ----
+        // ---- Top bar ----
         const topBar = document.createElement("div");
         Object.assign(topBar.style, {
             position: "fixed", top: "0", left: "0", right: "0",
@@ -594,13 +639,16 @@
                 boxShadow: innerGlow, cursor: "pointer",
                 WebkitTapHighlightColor: "transparent"
             });
-            btn.addEventListener("pointerdown", () => btn.style.boxShadow = innerGlowPressed);
-            btn.addEventListener("pointerup", () => btn.style.boxShadow = innerGlow);
+            pressEffect(
+                btn,
+                () => { btn.style.boxShadow = innerGlowPressed; },
+                () => { btn.style.boxShadow = innerGlow; }
+            );
             btn.onclick = onClick;
             return btn;
         }
 
-        // 语言切换下拉菜单：切换后原地重建，滚动位置保持
+        // Language switcher dropdown: rebuilds in place after switching, scroll position preserved
         const langSwitcher = createLangSwitcher((newLang) => {
             const scrollTop = mask.scrollTop;
             const dataRef = activeData;
@@ -619,11 +667,8 @@
         });
 
         const closeBtn = makeTopBtn(T.close, () => {
-            if (activeResultMask === mask) activeResultMask = null;
-            mask.remove();
-            activeData = null;
-            // 关闭后恢复悬浮球
-            injectButton();
+            // closeResultPage() removes the mask and restores the floating button
+            closeResultPage();
         });
 
         btnGroup.appendChild(langSwitcher);
@@ -633,11 +678,11 @@
         topBar.appendChild(btnGroup);
         mask.appendChild(topBar);
 
-        // ---- 内容区 ----
+        // ---- Content area ----
         const content = document.createElement("div");
         content.style.cssText = "max-width:520px; width:100%; margin:0 auto; box-sizing:border-box;";
 
-        if (data.title) {
+        if (data.title || data.desc) {
             const descCard = document.createElement("div");
             Object.assign(descCard.style, {
                 background: cardColor, borderRadius: "20px", padding: "16px",
@@ -645,23 +690,35 @@
                 boxShadow: innerGlow,
                 display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px"
             });
-            const descText = document.createElement("div");
-            descText.textContent = data.title;
-            descText.style.cssText = "white-space:pre-wrap;word-break:break-word;flex:1;";
-            const copyBtn = document.createElement("button");
-            copyBtn.textContent = T.copyTitle;
-            Object.assign(copyBtn.style, {
-                background: btnBgColor, color: "#ffffff",
-                border: "none", outline: "none",
-                borderRadius: "8px",
-                padding: "4px 12px", fontSize: "12px", fontWeight: "500",
-                flexShrink: "0", marginTop: "2px",
-                boxShadow: innerGlow, cursor: "pointer",
-                WebkitTapHighlightColor: "transparent"
-            });
-            copyBtn.onclick = () => copyText(data.title);
-            descCard.appendChild(descText);
-            descCard.appendChild(copyBtn);
+            const textCol = document.createElement("div");
+            textCol.style.cssText = "white-space:pre-wrap;word-break:break-word;flex:1;min-width:0;";
+            if (data.title) {
+                const descText = document.createElement("div");
+                descText.textContent = data.title;
+                textCol.appendChild(descText);
+            }
+            if (data.desc) {
+                const descEl = document.createElement("div");
+                descEl.textContent = data.desc;
+                descEl.style.cssText = `margin-top:8px;color:${subTextColor};font-size:13px;line-height:1.6;`;
+                textCol.appendChild(descEl);
+            }
+            descCard.appendChild(textCol);
+            if (data.title) {
+                const copyBtn = document.createElement("button");
+                copyBtn.textContent = T.copyTitle;
+                Object.assign(copyBtn.style, {
+                    background: btnBgColor, color: "#ffffff",
+                    border: "none", outline: "none",
+                    borderRadius: "8px",
+                    padding: "4px 12px", fontSize: "12px", fontWeight: "500",
+                    flexShrink: "0", marginTop: "2px",
+                    boxShadow: innerGlow, cursor: "pointer",
+                    WebkitTapHighlightColor: "transparent"
+                });
+                copyBtn.onclick = () => copyText(data.title);
+                descCard.appendChild(copyBtn);
+            }
             content.appendChild(descCard);
         }
 
@@ -706,7 +763,7 @@
                     T.downloadAll(data.images.length),
                     () => {
                         data.images.forEach((url, idx) => {
-                            setTimeout(() => downloadFile(url, `${data.title || "image"}_${idx+1}.jpg`), idx * 300);
+                            setTimeout(() => downloadFile(url, `${data.title || "image"}_${idx+1}.${extOf(url)}`), idx * 300);
                         });
                         alert(T.batchTip);
                     }
@@ -721,7 +778,7 @@
                 content.appendChild(img);
                 content.appendChild(createPanelButton(
                     T.downloadImage(idx + 1),
-                    () => downloadFile(imgUrl, `${data.title || "image"}_${idx+1}.jpg`)
+                    () => downloadFile(imgUrl, `${data.title || "image"}_${idx+1}.${extOf(imgUrl)}`)
                 ));
             });
         }
@@ -729,14 +786,18 @@
         mask.appendChild(content);
         document.body.appendChild(mask);
 
-        // 进入解析界面后隐藏悬浮球
+        // Hide floating button (result page takes full screen)
         removeButton();
     }
 
-    // ============================================================
-    // 解析入口
-    // ============================================================
+    // ========================================
+    // Entry point: fetch artwork data and render result modal
+    // Prevents parallel requests if user clicks button multiple times
+    // ========================================
+    let parsing = false;
     async function startParse() {
+        if (parsing) return; // Debounce: prevent concurrent requests
+        parsing = true;
         const loading = showLoadingToast(T.loading);
         try {
             const data = await fetchPixivData();
@@ -746,12 +807,15 @@
             loading.remove();
             alert(T.parseFailed(e.message));
             console.error(e);
+        } finally {
+            parsing = false;
         }
     }
 
-    // ============================================================
-    // 悬浮球注入
-    // ============================================================
+    // ========================================
+    // Inject/remove floating action button on page
+    // Button appears on right side (fixed position) and triggers artwork parsing
+    // ========================================
     function injectButton() {
         if (document.getElementById("pixivParseFloatBtn")) return;
         const btn = createFloatingBtn();
@@ -766,16 +830,15 @@
         if (btn) btn.remove();
     }
 
-    // ============================================================
-    // 页面切换监听
-    // ============================================================
+    // ========================================
+    // Monitor page navigation and clean up state when URL changes
+    // Closes result modal on SPA route/hash changes, AJAX navigation, back/forward
+    // ========================================
     let lastUrl = location.href;
     function checkPage() {
         if (location.href !== lastUrl) {
             lastUrl = location.href;
-            removeButton();
-            closeResultPage();
-            injectButton();
+            closeResultPage(); // Reset state when user navigates away
         }
     }
 
