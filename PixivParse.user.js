@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      1.0.1
+// @version      1.1.0
 // @description  Parse and download Pixiv artworks (original images / batch ZIP).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*
+// @match        https://www.pixiv.net/*/artworks/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
 // @grant        GM_getValue
@@ -35,6 +36,11 @@
             copied: "已复制",
             copyFailed: "复制失败",
 
+            theme: "主题",
+            themeSystem: "跟随系统",
+            themeDark: "深色",
+            themeLight: "浅色",
+
             packZip: (n) => `一键打包下载 (${n}张 ZIP)`,
             downloadAll: (n) => `一键下载全部 (${n}张)`,
             downloadImage: (n) => `下载图片 ${n}`,
@@ -50,9 +56,14 @@
             fflateMissing: "fflate 库未加载，请检查网络或重装脚本",
 
             parseFailed: (msg) => `解析失败：${msg}`,
+            requestTimeout: "请求超时，请检查网络后重试",
+            httpError: (code) => `服务器返回 ${code}（可能需要重新登录，或已触发访问限制）`,
+            badResponse: "服务器返回了无法解析的内容，请稍后重试",
             notArtwork: "非作品页面",
             noInfo: "无法获取作品信息",
             noImages: "无法获取图片列表",
+            ugoiraUnsupported: "这是动图作品（うごきらす / ugoira），目前仅支持静态图片，无法解析下载。",
+            noDownloadableImages: "未能从该作品获取到可下载的图片。",
         },
         en: {
             parse: "Parse",
@@ -62,6 +73,11 @@
             copyTitle: "Copy title",
             copied: "Copied",
             copyFailed: "Copy failed",
+
+            theme: "Theme",
+            themeSystem: "System",
+            themeDark: "Dark",
+            themeLight: "Light",
 
             packZip: (n) => `Pack as ZIP (${n} images)`,
             downloadAll: (n) => `Download all (${n} images)`,
@@ -78,9 +94,14 @@
             fflateMissing: "fflate not loaded. Check network or reinstall.",
 
             parseFailed: (msg) => `Parse failed: ${msg}`,
+            requestTimeout: "The request timed out. Check your connection and try again.",
+            httpError: (code) => `Server returned ${code} (you may need to log in again, or access is rate-limited)`,
+            badResponse: "Server returned an unparseable response. Please try again later.",
             notArtwork: "Not an artwork page",
             noInfo: "Failed to fetch artwork info",
             noImages: "Failed to fetch image list",
+            ugoiraUnsupported: "This is an animated artwork (ugoira). Only static images are supported, so it cannot be parsed or downloaded.",
+            noDownloadableImages: "No downloadable images were returned for this artwork.",
         },
         ja: {
             parse: "解析",
@@ -90,6 +111,11 @@
             copyTitle: "タイトルをコピー",
             copied: "コピーしました",
             copyFailed: "コピー失敗",
+
+            theme: "テーマ",
+            themeSystem: "システムに従う",
+            themeDark: "ダーク",
+            themeLight: "ライト",
 
             packZip: (n) => `ZIPで一括ダウンロード (${n}枚)`,
             downloadAll: (n) => `全てダウンロード (${n}枚)`,
@@ -106,9 +132,14 @@
             fflateMissing: "fflateが読み込まれていません",
 
             parseFailed: (msg) => `解析失敗：${msg}`,
+            requestTimeout: "リクエストがタイムアウトしました。ネットワークを確認して再試行してください。",
+            httpError: (code) => `サーバーが ${code} を返しました（再ログインが必要か、アクセス制限の可能性があります）`,
+            badResponse: "サーバーが解析できない応答を返しました。しばらくしてから再試行してください。",
             notArtwork: "作品ページではありません",
             noInfo: "作品情報の取得に失敗",
             noImages: "画像リストの取得に失敗",
+            ugoiraUnsupported: "これはうごきらす（アニメーション作品）です。現在は静止画のみ対応しているため、解析・ダウンロードできません。",
+            noDownloadableImages: "この作品からダウンロード可能な画像を取得できませんでした。",
         },
     };
 
@@ -128,11 +159,11 @@
             const saved = (typeof GM_getValue === 'function')
                 ? GM_getValue("pixiv_lang", null)
                 : null;
-            if (saved && I18N[saved]) return saved;
+            // hasOwnProperty, not a truthiness test: I18N["constructor"] and
+            // I18N["toString"] are inherited and truthy, which would set LANG to
+            // a bogus key and blank out every label in the UI.
+            if (saved && Object.prototype.hasOwnProperty.call(I18N, saved)) return saved;
         } catch (e) { /* ignore */ }
-
-        const saved = I18N[saved] ? saved : null;
-        if (saved) return saved;
 
         const codes = (navigator.languages && navigator.languages.length)
             ? navigator.languages
@@ -150,7 +181,7 @@
     let activeData = null;
 
     function setLang(newLang) {
-        if (!I18N[newLang]) return;
+        if (!Object.prototype.hasOwnProperty.call(I18N, newLang)) return;
         LANG = newLang;
         T = I18N[newLang];
         try {
@@ -162,41 +193,163 @@
     }
 
     // ========================================
-    // Inject CSS for UI components (language switcher, modals, buttons)
-    // Dark theme with glassmorphism effects for macOS-like appearance
+    // Theme management (system / dark / light)
+    // Preference is persisted in Tampermonkey storage (GM_setValue),
+    // and applied by toggling data-pp-theme on <html> so every UI element
+    // picks up the new CSS variables instantly without a re-render.
+    // ========================================
+    const THEME_STORAGE_KEY = "pixiv_theme";
+    const THEME_ORDER = ["system", "dark", "light"];
+    const THEME_META = {
+        system: { icon: "🌗", labelKey: "themeSystem" },
+        dark:   { icon: "🌙", labelKey: "themeDark" },
+        light:  { icon: "☀️", labelKey: "themeLight" },
+    };
+
+    // Media query tracking the OS/browser color scheme (used by "system" mode)
+    const darkMQ = (typeof window.matchMedia === 'function')
+        ? window.matchMedia('(prefers-color-scheme: dark)')
+        : null;
+
+    function detectTheme() {
+        try {
+            const saved = (typeof GM_getValue === 'function')
+                ? GM_getValue(THEME_STORAGE_KEY, null)
+                : null;
+            if (saved && Object.prototype.hasOwnProperty.call(THEME_META, saved)) return saved;
+        } catch (e) { /* ignore */ }
+        return "system";
+    }
+
+    let THEME_MODE = detectTheme();
+
+    // Resolve the configured mode into the concrete palette to use
+    function resolveTheme(mode) {
+        if (mode === "dark") return "dark";
+        if (mode === "light") return "light";
+        // "system": follow the OS scheme. If it cannot be queried at all, keep
+        // the historical dark look rather than silently flipping to light.
+        if (!darkMQ) return "dark";
+        return darkMQ.matches ? "dark" : "light";
+    }
+
+    // Write the resolved palette onto <html>; CSS variables cascade to all UI
+    function applyTheme() {
+        const resolved = resolveTheme(THEME_MODE);
+        const root = document.documentElement;
+        if (root) root.setAttribute("data-pp-theme", resolved);
+
+        // Keep the switcher button icon in sync (panel may already be open)
+        document.querySelectorAll(".pixiv-dd-btn[data-role='theme']").forEach(btn => {
+            const icon = btn.querySelector("[data-role='icon']");
+            if (icon) icon.textContent = THEME_META[THEME_MODE].icon;
+            btn.title = `${T.theme}: ${T[THEME_META[THEME_MODE].labelKey]}`;
+        });
+    }
+
+    function setTheme(newMode) {
+        if (!Object.prototype.hasOwnProperty.call(THEME_META, newMode)) return;
+        THEME_MODE = newMode;
+        try {
+            if (typeof GM_setValue === 'function') GM_setValue(THEME_STORAGE_KEY, newMode);
+        } catch (e) { /* ignore */ }
+        applyTheme();
+    }
+
+    // Follow live OS theme changes while in "system" mode
+    if (darkMQ) {
+        const onSchemeChange = () => { if (THEME_MODE === "system") applyTheme(); };
+        if (typeof darkMQ.addEventListener === 'function') {
+            darkMQ.addEventListener('change', onSchemeChange);
+        } else if (typeof darkMQ.addListener === 'function') {
+            darkMQ.addListener(onSchemeChange); // legacy Safari
+        }
+    }
+
+    // ========================================
+    // Inject CSS for UI components (dropdowns, modals, buttons)
+    // Both palettes are exposed as CSS custom properties on <html>, so
+    // switching dark/light only flips the data-pp-theme attribute and every
+    // element (including already-rendered ones) updates instantly.
+    // Glassmorphism styling kept for the macOS-like appearance.
     // ========================================
     function injectStyles() {
+        applyTheme(); // set data-pp-theme before any element is styled
         if (document.getElementById("pixivParseStyles")) return;
         const style = document.createElement("style");
         style.id = "pixivParseStyles";
         style.textContent = `
-            .pixiv-lang-wrap { position: relative; }
+            /* ---- Dark palette (default; identical to the previous look) ---- */
+            :root, :root[data-pp-theme="dark"] {
+                --pp-bg: #1c1c1e;
+                --pp-card: #252527;
+                --pp-text: #e5e5e7;
+                --pp-text-sub: #8e8e93;
+                --pp-btn-bg: #252527;
+                --pp-btn-text: #ffffff;
+                --pp-accent: #0096fa;
+                --pp-glow: inset 0 0 6px rgba(255,255,255,0.1);
+                --pp-glow-pressed: inset 0 0 3px rgba(255,255,255,0.06);
+                --pp-float-glow: inset 0 0 6px rgba(255,255,255,0.1);
+                --pp-float-glow-pressed: inset 0 0 3px rgba(255,255,255,0.06);
+                --pp-menu-bg: rgba(37,37,39,0.95);
+                --pp-menu-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+                --pp-item-hover: rgba(255,255,255,0.06);
+                --pp-border: rgba(255,255,255,0.05);
+                --pp-avatar-border: rgba(255,255,255,0.15);
+            }
 
-            .pixiv-lang-btn {
+            /* ---- Light palette ---- */
+            :root[data-pp-theme="light"] {
+                --pp-bg: #f2f2f7;
+                --pp-card: #ffffff;
+                --pp-text: #1c1c1e;
+                --pp-text-sub: #6e6e73;
+                --pp-btn-bg: #ffffff;
+                --pp-btn-text: #1c1c1e;
+                --pp-accent: #0066cc;  /* 5.57:1 on white — AA for the 14px active item label */
+                --pp-glow: 0 1px 2px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(0,0,0,0.12);
+                --pp-glow-pressed: 0 0 1px rgba(0,0,0,0.08), inset 0 0 0 1px rgba(0,0,0,0.14);
+                /* The floating button sits on Pixiv's own (white) page, so it
+                   needs a real drop shadow to stay visible in light mode. */
+                --pp-float-glow: 0 2px 12px rgba(0,0,0,0.22), inset 0 0 0 1px rgba(0,0,0,0.12);
+                --pp-float-glow-pressed: 0 1px 4px rgba(0,0,0,0.18), inset 0 0 0 1px rgba(0,0,0,0.14);
+                --pp-menu-bg: rgba(255,255,255,0.95);
+                --pp-menu-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.08);
+                --pp-item-hover: rgba(0,0,0,0.05);
+                --pp-border: rgba(0,0,0,0.08);
+                --pp-avatar-border: rgba(0,0,0,0.10);
+            }
+
+            .pixiv-dd-wrap { position: relative; }
+
+            .pixiv-dd-btn {
                 display: inline-flex; align-items: center; gap: 6px;
-                background: #252527; color: #fff;
+                background: var(--pp-btn-bg); color: var(--pp-btn-text);
                 border: none; outline: none;
                 border-radius: 14px; padding: 8px 12px;
                 font-size: 13px; font-weight: 500; font-family: inherit;
-                box-shadow: inset 0 0 6px rgba(255,255,255,0.1);
+                flex-shrink: 0;
+                box-shadow: var(--pp-glow);
                 cursor: pointer;
-                transition: box-shadow 0.15s, transform 0.15s;
+                transition: box-shadow 0.15s, transform 0.15s,
+                            background 0.2s ease, color 0.2s ease;
                 -webkit-tap-highlight-color: transparent;
             }
-            .pixiv-lang-btn:hover { transform: translateY(-1px); }
-            .pixiv-lang-btn:active {
-                box-shadow: inset 0 0 3px rgba(255,255,255,0.06);
+            .pixiv-dd-btn:hover { transform: translateY(-1px); }
+            .pixiv-dd-btn:active {
+                box-shadow: var(--pp-glow-pressed);
                 transform: scale(0.98);
             }
 
-            .pixiv-lang-menu {
+            .pixiv-dd-menu {
                 position: absolute; top: calc(100% + 8px); right: 0;
                 min-width: 150px;
-                background: rgba(37,37,39,0.95);
+                background: var(--pp-menu-bg);
                 backdrop-filter: blur(20px);
                 -webkit-backdrop-filter: blur(20px);
                 border-radius: 14px;
-                box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+                box-shadow: var(--pp-menu-shadow);
                 padding: 6px;
                 opacity: 0;
                 transform: translateY(-6px) scale(0.96);
@@ -205,52 +358,65 @@
                 transition: opacity 0.18s ease, transform 0.18s ease;
                 z-index: 1000;
             }
-            .pixiv-lang-menu.open {
+            .pixiv-dd-menu.open {
                 opacity: 1;
                 transform: translateY(0) scale(1);
                 pointer-events: auto;
             }
 
-            .pixiv-lang-item {
+            .pixiv-dd-item {
                 display: flex; align-items: center; justify-content: space-between;
+                gap: 10px;
                 padding: 8px 12px;
                 border-radius: 10px;
-                color: #e5e5e7;
+                color: var(--pp-text);
                 font-size: 14px;
                 cursor: pointer;
-                transition: background 0.12s;
+                transition: background 0.12s, color 0.2s ease;
                 user-select: none;
             }
-            .pixiv-lang-item:hover { background: rgba(255,255,255,0.06); }
-            .pixiv-lang-item.active {
-                color: #0096fa;
+            .pixiv-dd-item:hover { background: var(--pp-item-hover); }
+            .pixiv-dd-item.active {
+                color: var(--pp-accent);
                 font-weight: 600;
             }
-            .pixiv-lang-item .check {
+            .pixiv-dd-item .check {
                 font-size: 13px;
                 opacity: 0;
                 transition: opacity 0.15s;
             }
-            .pixiv-lang-item.active .check { opacity: 1; }
+            .pixiv-dd-item.active .check { opacity: 1; }
         `;
-        document.head.appendChild(style);
+        const host = document.head || document.documentElement;
+        if (!host) {
+            // @run-at document-start: neither exists yet, retry once parsed
+            document.addEventListener("DOMContentLoaded", () => injectStyles(), { once: true });
+            return;
+        }
+        host.appendChild(style);
     }
 
     // ========================================
     // Color scheme, HTTP headers, and UI dimensions
-    // Dark theme palette matching modern OS defaults
+    // Colors are CSS variable references resolved from the active palette
+    // (see injectStyles); theme switching needs no re-render.
     // ========================================
     const CUSTOM_HEADERS = { 'Referer': 'https://www.pixiv.net/' };
     const GITHUB_URL = "https://github.com/Harry20120330/PixivParse/";
 
-    const bgColor = "#1c1c1e";
-    const cardColor = "#252527";
-    const textColor = "#e5e5e7";
-    const subTextColor = "#8e8e93";
-    const btnBgColor = cardColor;
-    const innerGlow = "inset 0 0 6px rgba(255,255,255,0.1)";
-    const innerGlowPressed = "inset 0 0 3px rgba(255,255,255,0.06)";
-    const accentColor = "#0096fa";
+    const bgColor = "var(--pp-bg)";
+    const cardColor = "var(--pp-card)";
+    const textColor = "var(--pp-text)";
+    const subTextColor = "var(--pp-text-sub)";
+    const btnBgColor = "var(--pp-btn-bg)";
+    const btnTextColor = "var(--pp-btn-text)";
+    const innerGlow = "var(--pp-glow)";
+    const innerGlowPressed = "var(--pp-glow-pressed)";
+    const floatGlow = "var(--pp-float-glow)";
+    const floatGlowPressed = "var(--pp-float-glow-pressed)";
+    const accentColor = "var(--pp-accent)";
+    const borderColor = "var(--pp-border)";
+    const avatarBorderColor = "var(--pp-avatar-border)";
 
     // ========================================
     // Manage result page modal lifecycle and cleanup
@@ -260,10 +426,9 @@
 
     function closeResultPage() {
         if (activeResultMask) {
-            const langWrap = activeResultMask.querySelector(".pixiv-lang-wrap");
-            if (langWrap && typeof langWrap._cleanup === "function") {
-                langWrap._cleanup();
-            }
+            activeResultMask.querySelectorAll(".pixiv-dd-wrap").forEach(wrap => {
+                if (typeof wrap._cleanup === "function") wrap._cleanup();
+            });
             activeResultMask.remove();
             activeResultMask = null;
         }
@@ -293,11 +458,11 @@
             transform: "translateY(-50%)",
             zIndex: "2147483647",
             width: "56px", height: "56px", borderRadius: "50%",
-            background: btnBgColor, color: "#ffffff",
+            background: btnBgColor, color: btnTextColor,
             border: "none", outline: "none",
             fontSize: "14px", fontWeight: "600",
             fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
-            boxShadow: innerGlow,
+            boxShadow: floatGlow,
             cursor: "pointer",
             transition: "box-shadow 0.15s, transform 0.15s",
             WebkitTapHighlightColor: "transparent"
@@ -305,11 +470,11 @@
         pressEffect(
             btn,
             () => {
-                btn.style.boxShadow = innerGlowPressed;
+                btn.style.boxShadow = floatGlowPressed;
                 btn.style.transform = "translateY(-50%) scale(0.92)";
             },
             () => {
-                btn.style.boxShadow = innerGlow;
+                btn.style.boxShadow = floatGlow;
                 btn.style.transform = "translateY(-50%) scale(1)";
             }
         );
@@ -353,7 +518,7 @@
         btn.textContent = text;
         Object.assign(btn.style, {
             display: "block", width: "100%",
-            background: btnBgColor, color: "#ffffff",
+            background: btnBgColor, color: btnTextColor,
             border: "none", outline: "none",
             borderRadius: "14px",
             padding: "12px", fontSize: "16px", fontWeight: "500",
@@ -392,26 +557,115 @@
     }
 
     // ========================================
+    // Sanitize an artwork title for use as a filename or ZIP entry segment.
+    // Pixiv titles routinely contain characters that are illegal in filenames
+    // (\ / : * ? " < > |), control characters (including NUL), leading or
+    // trailing dots, or are long enough to exceed the 255-byte limit most
+    // filesystems impose on a single name component. Used unsanitized they
+    // break GM_download, and titles like ".." produce ZIP entries that extract
+    // outside the target folder.
+    // ========================================
+    const FILENAME_ILLEGAL_RE = /[\\/:*?"<>|\u0000-\u001f]/g;
+    const FILENAME_MAX_BYTES = 120; // leaves room for "_000.png" / ".zip" suffixes
+    const FILENAME_RESERVED_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i; // Windows devices
+
+    function byteLength(str) {
+        if (typeof TextEncoder === 'function') return new TextEncoder().encode(str).length;
+        let n = 0; // conservative fallback: 3 bytes per non-ASCII code point
+        for (const ch of str) n += ch.codePointAt(0) > 0x7f ? 3 : 1;
+        return n;
+    }
+
+    // Truncate on a code-point boundary so multi-byte characters stay intact
+    function truncateBytes(str, maxBytes) {
+        if (byteLength(str) <= maxBytes) return str;
+        let out = "";
+        for (const ch of str) {
+            if (byteLength(out + ch) > maxBytes) break;
+            out += ch;
+        }
+        return out;
+    }
+
+    function sanitizeFilename(raw, fallback) {
+        let s = String(raw === undefined || raw === null ? "" : raw)
+            .replace(/\s+/g, " ")               // collapse newlines/tabs/space runs first
+            .replace(FILENAME_ILLEGAL_RE, "_") // then any remaining illegal/control char
+            .replace(/^[\s.]+/, "")             // leading dots & spaces (hidden files, "..")
+            .replace(/[\s.]+$/, "");            // trailing dots & spaces (invalid on Windows)
+
+        s = truncateBytes(s, FILENAME_MAX_BYTES).replace(/[\s.]+$/, "");
+
+        // Titles like "../.." reduce to separators/punctuation only; prefer the
+        // fallback. Deliberately avoids /[\p{L}\p{N}]/u: Unicode property escapes
+        // are a parse-time SyntaxError on older engines (Firefox < 78), which
+        // would kill the whole script, not just this branch.
+        if (!/[^\s._-]/.test(s)) s = "";
+        if (FILENAME_RESERVED_RE.test(s)) s += "_"; // never a bare device name
+        return s || fallback || "pixiv";
+    }
+
+    // ========================================
     // Fetch artwork metadata and image URLs from Pixiv API
     // Returns title, description, author info, and list of image URLs
     // ========================================
+    // ========================================
+    // fetch() with a hard timeout and human-readable failures.
+    // The metadata calls previously had neither: a hung request left the
+    // "parsing..." toast on screen forever and kept `parsing` latched true, so
+    // the button stayed dead until the page was reloaded; and an HTML error
+    // page surfaced to the user as "Unexpected token '<' ... is not valid JSON".
+    // ========================================
+    const METADATA_TIMEOUT_MS = 20000;
+
+    function fetchWithTimeout(url, ms) {
+        if (typeof AbortController !== 'function') {
+            return fetch(url, { credentials: 'include' });
+        }
+        const ctrl = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, ms);
+        return fetch(url, { credentials: 'include', signal: ctrl.signal }).then(
+            (res) => { clearTimeout(timer); return res; },
+            (err) => {
+                clearTimeout(timer);
+                throw timedOut ? new Error(T.requestTimeout) : err;
+            }
+        );
+    }
+
+    // Convert a response into JSON, or into a message the user can act on
+    async function readJson(res, label) {
+        if (!res || !res.ok) throw new Error(T.httpError(res ? res.status : 0));
+        try {
+            return await res.json();
+        } catch (e) {
+            console.error('PixivParse: unparseable response from', label, e);
+            throw new Error(T.badResponse);
+        }
+    }
+
     async function fetchPixivData() {
         const match = location.href.match(/artworks\/(\d+)/);
         if (!match) throw new Error(T.notArtwork);
         const illustId = match[1];
 
         const [detailResp, pagesResp] = await Promise.all([
-            fetch(`https://www.pixiv.net/ajax/illust/${illustId}`, { credentials: 'include' }),
-            fetch(`https://www.pixiv.net/ajax/illust/${illustId}/pages`, { credentials: 'include' })
+            fetchWithTimeout(`https://www.pixiv.net/ajax/illust/${illustId}`, METADATA_TIMEOUT_MS),
+            fetchWithTimeout(`https://www.pixiv.net/ajax/illust/${illustId}/pages`, METADATA_TIMEOUT_MS)
         ]);
-        const detail = await detailResp.json();
-        const pages = await pagesResp.json();
+        const detail = await readJson(detailResp, 'illust');
+        const pages = await readJson(pagesResp, 'pages');
 
         if (detail.error || !detail.body) throw new Error(detail.message || T.noInfo);
         if (pages.error || !pages.body) throw new Error(pages.message || T.noImages);
 
         const illust = detail.body;
-        const imageUrls = pages.body.map(p => p.urls.original || p.urls.regular);
+        // Some entries can lack both urls; filter them out instead of rendering
+        // <img src="undefined"> and a download button pointing at "undefined".
+        const imageUrls = pages.body
+            .map(p => (p && p.urls) ? (p.urls.original || p.urls.regular) : null)
+            .filter(Boolean);
         const user = illust.user || {};
 
         return {
@@ -423,7 +677,10 @@
                 id: illust.userId || user.id || ""
             },
             images: imageUrls,
-            type: "image"
+            // Pixiv illustType: 0 = illustration, 1 = manga, 2 = ugoira.
+            // The pages endpoint returns nothing for ugoira, so the panel needs
+            // to say why instead of showing an empty gallery.
+            type: Number(illust.illustType) === 2 ? "ugoira" : "image"
         };
     }
 
@@ -458,7 +715,20 @@
     // Downloads images sequentially and monitors success/failure
     // Auto-triggers browser download upon completion
     // ========================================
-    async function packAndDownload(images, baseName) {
+    // Re-entrancy guard: the panel stays open while packing, so the button is
+    // clickable again. Without this, N clicks run N packs in parallel — N ZIPs,
+    // N x images fetched, and every pack but the last writing progress into a
+    // detached toast node.
+    let packing = false;
+    function packAndDownload(images, baseName) {
+        if (packing) return Promise.resolve();
+        packing = true;
+        return runPackAndDownload(images, baseName)
+            .finally(() => { packing = false; });
+    }
+
+    async function runPackAndDownload(images, rawBaseName) {
+        const baseName = sanitizeFilename(rawBaseName, "pixiv_album");
         const loading = showLoadingToast(T.preparing);
 
         if (typeof fflate === 'undefined' || !fflate.Zip) {
@@ -535,40 +805,51 @@
     }
 
     // ========================================
-    // Create language switcher dropdown in result page header
-    // Supports Chinese, English, Japanese with visual indicator
+    // Generic dropdown shared by the language and theme switchers
+    // buttonLabel is HTML; items are { value, label, icon? }
+    // Exposes wrap._cleanup() so listeners can be removed with the panel
     // ========================================
-    function createLangSwitcher(onSwitch) {
+    function createDropdown({ role, buttonLabel, items, currentValue, onSelect }) {
         const wrap = document.createElement("div");
-        wrap.className = "pixiv-lang-wrap";
+        wrap.className = "pixiv-dd-wrap";
 
         const btn = document.createElement("button");
-        btn.className = "pixiv-lang-btn";
-        btn.innerHTML = `<span style="font-size:13px;line-height:1;">🌐</span><span>${LANG_META[LANG].short}</span>`;
+        btn.className = "pixiv-dd-btn";
+        btn.dataset.role = role;
+        btn.innerHTML = buttonLabel;
 
         const menu = document.createElement("div");
-        menu.className = "pixiv-lang-menu";
+        menu.className = "pixiv-dd-menu";
 
-        LANG_ORDER.forEach(code => {
-            const meta = LANG_META[code];
+        items.forEach(it => {
             const item = document.createElement("div");
-            item.className = "pixiv-lang-item" + (code === LANG ? " active" : "");
+            item.className = "pixiv-dd-item" + (it.value === currentValue ? " active" : "");
+            const iconHTML = it.icon
+                ? `<span style="margin-right:6px;font-size:13px;">${it.icon}</span>`
+                : "";
             item.innerHTML = `
-                <span>${meta.native}</span>
-                <span class="check">✓</span>
+                <span>${iconHTML}${it.label}</span>
+                <span class="check">\u2713</span>
             `;
             item.onclick = (e) => {
                 e.stopPropagation();
                 menu.classList.remove("open");
-                if (code === LANG) return;
-                onSwitch(code);
+                if (it.value === currentValue) return;
+                onSelect(it.value);
             };
             menu.appendChild(item);
         });
 
         btn.onclick = (e) => {
+            // stopPropagation keeps this click from reaching the document-level
+            // closeOnOutside handlers, so other dropdowns would stay open and
+            // overlap this one. Close them explicitly: menus are mutually exclusive.
             e.stopPropagation();
-            menu.classList.toggle("open");
+            const willOpen = !menu.classList.contains("open");
+            document.querySelectorAll(".pixiv-dd-menu.open").forEach(m => {
+                if (m !== menu) m.classList.remove("open");
+            });
+            menu.classList.toggle("open", willOpen);
         };
 
         const closeOnOutside = (e) => {
@@ -585,6 +866,52 @@
         wrap.appendChild(btn);
         wrap.appendChild(menu);
         return wrap;
+    }
+
+    // ========================================
+    // Language switcher: Chinese / English / Japanese
+    // ========================================
+    function createLangSwitcher(onSwitch) {
+        return createDropdown({
+            role: "lang",
+            buttonLabel: `<span style="font-size:13px;line-height:1;">\u{1F310}</span><span>${LANG_META[LANG].short}</span>`,
+            items: LANG_ORDER.map(code => ({
+                value: code,
+                label: LANG_META[code].native,
+            })),
+            currentValue: LANG,
+            onSelect: onSwitch,
+        });
+    }
+
+    // ========================================
+    // Theme switcher: follow system / dark / light
+    // The choice is persisted in Tampermonkey storage; applying it only flips
+    // CSS variables, so an open panel repaints without re-rendering and the
+    // scroll position is preserved.
+    // ========================================
+    function createThemeSwitcher() {
+        const dd = createDropdown({
+            role: "theme",
+            buttonLabel: `<span data-role="icon" style="font-size:13px;line-height:1;">${THEME_META[THEME_MODE].icon}</span>`,
+            items: THEME_ORDER.map(mode => ({
+                value: mode,
+                icon: THEME_META[mode].icon,
+                label: T[THEME_META[mode].labelKey],
+            })),
+            currentValue: THEME_MODE,
+            onSelect: (mode) => {
+                setTheme(mode);
+                // Rebuild in place so the check marker and icon follow the choice.
+                // The old wrap leaves the DOM here, so release its document-level
+                // outside-click listener first or it would leak on every switch.
+                dd._cleanup();
+                dd.replaceWith(createThemeSwitcher());
+            },
+        });
+        dd.querySelector(".pixiv-dd-btn").title =
+            `${T.theme}: ${T[THEME_META[THEME_MODE].labelKey]}`;
+        return dd;
     }
 
     // ========================================
@@ -614,28 +941,36 @@
             background: cardColor, zIndex: "999",
             padding: "12px 16px",
             display: "flex", justifyContent: "space-between", alignItems: "center",
+            gap: "8px", flexWrap: "wrap",
             boxShadow: innerGlow,
-            borderBottom: "1px solid rgba(255,255,255,0.05)"
+            borderBottom: `1px solid ${borderColor}`
         });
 
         const titleSpan = document.createElement("span");
-        titleSpan.style.cssText = `display:flex;align-items:center;color:${textColor};font-size:18px;font-weight:600;`;
+        // min-width:0 plus a truncating inner span: without them the flex row
+        // cannot shrink, so on a ~320px screen the Close button is pushed past
+        // the right edge of this fixed bar and the panel cannot be dismissed.
+        titleSpan.style.cssText = `display:flex;align-items:center;flex:1 1 auto;min-width:0;color:${textColor};font-size:18px;font-weight:600;`;
         const badge = document.createElement("span");
-        badge.style.cssText = `display:inline-block;width:8px;height:8px;background:${accentColor};border-radius:2px;margin-right:8px;`;
+        badge.style.cssText = `display:inline-block;flex-shrink:0;width:8px;height:8px;background:${accentColor};border-radius:2px;margin-right:8px;`;
+        const titleText = document.createElement("span");
+        titleText.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
+        titleText.textContent = T.title;
         titleSpan.appendChild(badge);
-        titleSpan.appendChild(document.createTextNode(T.title));
+        titleSpan.appendChild(titleText);
 
         const btnGroup = document.createElement("div");
-        btnGroup.style.cssText = "display:flex;gap:8px;align-items:center;";
+        btnGroup.style.cssText = "display:flex;gap:8px;align-items:center;flex-shrink:0;";
 
         function makeTopBtn(text, onClick) {
             const btn = document.createElement("button");
             btn.textContent = text;
             Object.assign(btn.style, {
-                background: btnBgColor, color: "#ffffff",
+                background: btnBgColor, color: btnTextColor,
                 border: "none", outline: "none",
                 borderRadius: "14px", padding: "8px 14px",
                 fontSize: "14px", fontWeight: "500", fontFamily: "inherit",
+                flexShrink: "0",
                 boxShadow: innerGlow, cursor: "pointer",
                 WebkitTapHighlightColor: "transparent"
             });
@@ -671,6 +1006,10 @@
             closeResultPage();
         });
 
+        // Theme switcher: system / dark / light (persisted in userscript storage)
+        const themeSwitcher = createThemeSwitcher();
+
+        btnGroup.appendChild(themeSwitcher);
         btnGroup.appendChild(langSwitcher);
         btnGroup.appendChild(githubBtn);
         btnGroup.appendChild(closeBtn);
@@ -708,7 +1047,7 @@
                 const copyBtn = document.createElement("button");
                 copyBtn.textContent = T.copyTitle;
                 Object.assign(copyBtn.style, {
-                    background: btnBgColor, color: "#ffffff",
+                    background: btnBgColor, color: btnTextColor,
                     border: "none", outline: "none",
                     borderRadius: "8px",
                     padding: "4px 12px", fontSize: "12px", fontWeight: "500",
@@ -734,7 +1073,7 @@
                 avt.src = data.author.avatar;
                 Object.assign(avt.style, {
                     width: "48px", height: "48px", borderRadius: "50%",
-                    objectFit: "cover", border: "2px solid rgba(255,255,255,0.15)"
+                    objectFit: "cover", border: `2px solid ${avatarBorderColor}`
                 });
                 authorCard.appendChild(avt);
             }
@@ -754,16 +1093,32 @@
         }
 
         if (data.images && data.images.length > 0) {
+            // One sanitized base for every artifact of this artwork, so the ZIP
+            // folder name and the individual filenames stay consistent.
+            const fileBase = sanitizeFilename(data.title, "image");
+
             if (data.images.length > 1) {
                 content.appendChild(createPanelButton(
                     T.packZip(data.images.length),
-                    () => packAndDownload(data.images, data.title || "pixiv_album")
+                    () => packAndDownload(data.images, fileBase)
                 ));
                 content.appendChild(createPanelButton(
                     T.downloadAll(data.images.length),
                     () => {
+                        if (batching) return;
+                        batching = true;
+                        const total = data.images.length;
                         data.images.forEach((url, idx) => {
-                            setTimeout(() => downloadFile(url, `${data.title || "image"}_${idx+1}.${extOf(url)}`), idx * 300);
+                            setTimeout(() => {
+                                try {
+                                    downloadFile(url, `${fileBase}_${idx+1}.${extOf(url)}`);
+                                } finally {
+                                    // Release the guard even if GM_download throws,
+                                    // otherwise every later "download all" click on
+                                    // this page would be silently ignored.
+                                    if (idx === total - 1) batching = false;
+                                }
+                            }, idx * 300);
                         });
                         alert(T.batchTip);
                     }
@@ -778,9 +1133,30 @@
                 content.appendChild(img);
                 content.appendChild(createPanelButton(
                     T.downloadImage(idx + 1),
-                    () => downloadFile(imgUrl, `${data.title || "image"}_${idx+1}.${extOf(imgUrl)}`)
+                    () => downloadFile(imgUrl, `${fileBase}_${idx+1}.${extOf(imgUrl)}`)
                 ));
             });
+        } else {
+            // Nothing to download. An animated artwork (ugoira) yields an empty
+            // pages list, so explain that case explicitly rather than leaving
+            // the user with a blank gallery.
+            const isUgoira = data.type === "ugoira";
+            const notice = document.createElement("div");
+            Object.assign(notice.style, {
+                display: "flex", alignItems: "flex-start", gap: "10px",
+                background: cardColor, borderRadius: "20px", padding: "16px",
+                marginBottom: "20px", boxShadow: innerGlow,
+                color: textColor, fontSize: "14px", lineHeight: "1.6"
+            });
+            const icon = document.createElement("span");
+            icon.textContent = isUgoira ? "\u{1F39E}\uFE0F" : "\u26A0\uFE0F";
+            icon.style.cssText = "font-size:18px;line-height:1.4;flex-shrink:0;";
+            const msg = document.createElement("span");
+            msg.style.cssText = "flex:1;min-width:0;";
+            msg.textContent = isUgoira ? T.ugoiraUnsupported : T.noDownloadableImages;
+            notice.appendChild(icon);
+            notice.appendChild(msg);
+            content.appendChild(notice);
         }
 
         mask.appendChild(content);
@@ -795,6 +1171,7 @@
     // Prevents parallel requests if user clicks button multiple times
     // ========================================
     let parsing = false;
+    let batching = false;   // guards the "download all" staggered queue
     async function startParse() {
         if (parsing) return; // Debounce: prevent concurrent requests
         parsing = true;
@@ -816,7 +1193,15 @@
     // Inject/remove floating action button on page
     // Button appears on right side (fixed position) and triggers artwork parsing
     // ========================================
+    // Pixiv is an SPA: after navigating to e.g. /users/123 the script is still
+    // loaded, so re-validate the URL instead of leaving a button that only
+    // errors with "not an artwork page" when clicked.
+    function isArtworkPage() {
+        return /\/artworks\/\d+/.test(location.pathname);
+    }
+
     function injectButton() {
+        if (!isArtworkPage()) { removeButton(); return; }
         if (document.getElementById("pixivParseFloatBtn")) return;
         const btn = createFloatingBtn();
         btn.onclick = () => {

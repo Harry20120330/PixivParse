@@ -1,0 +1,11 @@
+# Normalise line endings so FastUpdate.sh/.ps1 and the metadata block behave
+# identically on every platform. Git for Windows defaults to core.autocrlf=true,
+# which otherwise hands the shell script a CRLF copy of PixivParse.user.js.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.js   text eol=lf
+*.md   text eol=lf
+*.ps1  text eol=lf
+LICENSE text eol=lf
+NOTICE  text eol=lf
