@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      1.1.0
+// @version      1.1.1
 // @description  Parse and download Pixiv artworks (original images / batch ZIP).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*
@@ -46,6 +46,13 @@
             downloadImage: (n) => `下载图片 ${n}`,
             batchTip: "开始批量下载，请允许浏览器多次保存",
 
+            downloadingSingle: "正在下载...",
+            dlStarted: (name) => `已开始下载：${name}`,
+            dlFailed: (msg) => `下载失败：${msg}`,
+            dlFallback: "原图拉取失败，已退回浏览器下载（可能被防盗链拒绝）",
+            batchDone: (n) => `下载完成：${n} 张`,
+            batchDoneWithFailed: (ok, failed) => `下载完成：成功 ${ok} 张，失败 ${failed} 张`,
+
             preparing: "准备打包...",
             downloading: (i, total) => `下载中 ${i}/${total}...`,
             zipping: "正在生成 ZIP...",
@@ -84,6 +91,13 @@
             downloadImage: (n) => `Download image ${n}`,
             batchTip: "Batch download starting. Please allow multiple saves.",
 
+            downloadingSingle: "Downloading...",
+            dlStarted: (name) => `Download started: ${name}`,
+            dlFailed: (msg) => `Download failed: ${msg}`,
+            dlFallback: "Original fetch failed; fell back to a browser download (may be blocked by hotlink protection)",
+            batchDone: (n) => `Done: ${n} image(s) downloaded`,
+            batchDoneWithFailed: (ok, failed) => `Done: ${ok} succeeded, ${failed} failed`,
+
             preparing: "Preparing...",
             downloading: (i, total) => `Downloading ${i}/${total}...`,
             zipping: "Generating ZIP...",
@@ -121,6 +135,13 @@
             downloadAll: (n) => `全てダウンロード (${n}枚)`,
             downloadImage: (n) => `画像 ${n} をダウンロード`,
             batchTip: "一括ダウンロードを開始します。複数回の保存を許可してください。",
+
+            downloadingSingle: "ダウンロード中...",
+            dlStarted: (name) => `ダウンロード開始：${name}`,
+            dlFailed: (msg) => `ダウンロード失敗：${msg}`,
+            dlFallback: "原画の取得に失敗したため、ブラウザのダウンロードに切り替えました（直リンク防止で拒否される可能性あり）",
+            batchDone: (n) => `完了：${n} 枚をダウンロード`,
+            batchDoneWithFailed: (ok, failed) => `完了：成功 ${ok} 枚、失敗 ${failed} 枚`,
 
             preparing: "準備中...",
             downloading: (i, total) => `ダウンロード中 ${i}/${total}...`,
@@ -544,8 +565,83 @@
         return btn;
     }
 
-    function downloadFile(url, filename) {
-        GM_download({ url, name: filename, saveAs: false });
+    // ========================================
+    // Save a single image.
+    //
+    // The previous implementation called GM_download({url, name}) directly.
+    // GM_download delegates to the browser's download API, which has no way to
+    // attach custom request headers — and i.pximg.net answers every request
+    // that lacks `Referer: https://www.pixiv.net/` with 403 Forbidden. The
+    // download therefore died server-side while Tampermonkey surfaced nothing,
+    // so the button simply appeared to do nothing.
+    //
+    // Fetch the bytes ourselves through GM_xmlhttpRequest (which *can* set the
+    // Referer — this is the same path the ZIP packer already uses successfully)
+    // and hand the browser a blob URL. GM_download is kept only as a last-resort
+    // fallback, in case the XHR is blocked but the browser download is not.
+    // ========================================
+    const MIME_BY_EXT = {
+        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+        gif: "image/gif", webp: "image/webp", bmp: "image/bmp"
+    };
+
+    // Re-wrap a Blob whose type is missing/empty so the saved file opens
+    // correctly, inferring the MIME type from the URL extension.
+    function typedBlob(blob, url) {
+        if (blob && blob.type) return blob;
+        const type = MIME_BY_EXT[extOf(url)] || "application/octet-stream";
+        return new Blob([blob], { type });
+    }
+
+    function saveBlobAs(blob, filename) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    // opts.silent: skip the toast and rethrow on failure, so the batch caller
+    // can drive one shared progress toast and count real successes.
+    async function downloadFile(url, filename, opts) {
+        const silent = !!(opts && opts.silent);
+        const toast = silent ? null : showLoadingToast(T.downloadingSingle);
+
+        try {
+            const blob = await fetchImageBlob(url);
+            if (!blob || blob.size === 0) throw new Error("empty response");
+            saveBlobAs(typedBlob(blob, url), filename);
+            if (toast) {
+                toast.textContent = T.dlStarted(filename);
+                setTimeout(() => toast.remove(), 2600);
+            }
+            return true;
+        } catch (e) {
+            console.error("PixivParse: image fetch failed", url, e);
+            if (silent) throw e;
+
+            // Last resort: let the browser try, even though it will most likely
+            // hit the same 403. Say so instead of pretending it worked.
+            let fellBack = false;
+            try {
+                if (typeof GM_download === "function") {
+                    GM_download({ url, name: filename, saveAs: false });
+                    fellBack = true;
+                }
+            } catch (e2) {
+                console.error("PixivParse: GM_download fallback failed", e2);
+            }
+            if (toast) {
+                toast.textContent = fellBack
+                    ? T.dlFallback
+                    : T.dlFailed(e && e.message ? e.message : String(e));
+                setTimeout(() => toast.remove(), fellBack ? 3500 : 5000);
+            }
+            return false;
+        }
     }
 
     // Extract file extension from Pixiv image URL, removing query parameters
@@ -1104,23 +1200,38 @@
                 ));
                 content.appendChild(createPanelButton(
                     T.downloadAll(data.images.length),
-                    () => {
+                    async () => {
                         if (batching) return;
                         batching = true;
                         const total = data.images.length;
-                        data.images.forEach((url, idx) => {
-                            setTimeout(() => {
+                        const toast = showLoadingToast(T.batchTip);
+                        let ok = 0, failed = 0;
+
+                        try {
+                            // Sequential rather than staggered setTimeouts: each
+                            // image is now fetched as a Blob before the browser
+                            // saves it, so firing them all at once would stack N
+                            // large buffers in memory and trip download throttling.
+                            for (let idx = 0; idx < total; idx++) {
+                                const url = data.images[idx];
+                                toast.textContent = T.downloading(idx + 1, total);
                                 try {
-                                    downloadFile(url, `${fileBase}_${idx+1}.${extOf(url)}`);
-                                } finally {
-                                    // Release the guard even if GM_download throws,
-                                    // otherwise every later "download all" click on
-                                    // this page would be silently ignored.
-                                    if (idx === total - 1) batching = false;
+                                    await downloadFile(url, `${fileBase}_${idx + 1}.${extOf(url)}`, { silent: true });
+                                    ok++;
+                                } catch (e) {
+                                    failed++;
+                                    console.error("PixivParse: batch item failed", url, e);
                                 }
-                            }, idx * 300);
-                        });
-                        alert(T.batchTip);
+                            }
+                            toast.textContent = failed === 0
+                                ? T.batchDone(ok)
+                                : T.batchDoneWithFailed(ok, failed);
+                        } finally {
+                            // Always release the guard, otherwise every later
+                            // "download all" click on this page is ignored.
+                            batching = false;
+                            setTimeout(() => toast.remove(), 3000);
+                        }
                     }
                 ));
             }

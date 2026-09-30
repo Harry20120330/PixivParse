@@ -4,7 +4,7 @@
 English | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
 ## Introduction
-PixivParse is a lightweight **Tampermonkey userscript** that parses and downloads Pixiv artworks in original quality. It works by injecting a floating button on any Pixiv artwork page, and provides:
+PixivParse is a lightweight **Tampermonkey userscript** that parses and downloads Pixiv artworks in original quality. It injects a floating button on any Pixiv artwork page and provides:
 
 - **Original image download** — fetches `original` URLs with a spoofed `Referer` to bypass hot-link protection
 - **Batch download** — download all images of a multi-page artwork at once
@@ -37,19 +37,19 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
 ### Usage
 1. A floating **Parse** button appears on the right edge of the page.
 2. Click it to open the artwork gallery panel:
-   - **Pack as ZIP** — downloads all images into a single ZIP file (fetched one at a time, stored without compression).
-   - **Download all** — triggers individual file saves one by one (browser may prompt for multiple saves).
+   - **One-click ZIP download (N images)** — downloads all images into a single ZIP file (fetched one at a time, stored without compression).
+   - **Download all (N images)** — triggers individual file saves one by one (the browser may ask for permission to save multiple files).
    - **Download image N** — save a single image.
    - **Copy title** — copy the artwork title to clipboard.
-3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐); both choices are remembered across visits.
+3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐). Both choices are remembered permanently; changing the theme does not re-render the panel or change its scroll position.
 
 ## Notes
 - **Login required.** The script uses Pixiv's `ajax` endpoints with the browser's session cookie; you must be logged in to pixiv.net for image access.
 - **ZIP packaging and memory.** The fflate library loads from CDN on demand; if the CDN is unreachable, ZIP packaging will be unavailable (individual downloads still work). Images are fetched one at a time and compression is streamed, but the **finished ZIP is held entirely in memory**, so peak usage is roughly the combined size of all original images (entries are stored, not compressed). For very large galleries — say hundreds of full-size PNGs — this can consume a lot of memory or even crash the tab; use "Download all" instead in that case.
 - **Request throttling.** ZIP packing fetches images one at a time, so only a single request is ever in flight; "Download all" staggers its saves at 300 ms intervals. Even so, please avoid repeatedly re-parsing or pulling large batches, so as not to put pressure on Pixiv.
 - **No server.** Everything runs in the browser. No accounts, keys, or backends required.
-- **Static images only.** Animated artworks (ugoira) cannot be parsed; the panel states this explicitly instead of showing an empty gallery. Static illustrations and multi-page manga are both supported.
-- **Filename sanitizing.** The artwork title is used for download filenames and the ZIP's inner folder name, so characters that are illegal in filenames (`\` `/` `:` `*` `?` `"` `<` `>` `|`) and control characters are replaced with underscores, leading/trailing dots and spaces are stripped, over-long titles are truncated to 120 bytes on a character boundary, and reserved Windows device names (`CON`, `NUL`, ...) get a suffix. This prevents silently failed downloads and ZIP entries that would extract outside the target folder when a title is something like `..`.
+- **Static images only.** Animated artworks (ugoira) cannot be parsed; the panel clearly explains why. Static illustrations and multi-page manga are both supported.
+- **Filename sanitizing.** The artwork title is used for download filenames and the ZIP's inner folder name, so characters that are illegal in filenames (`\` `/` `:` `*` `?` `"` `<` `>` `|`) and control characters are replaced with underscores, leading/trailing dots and spaces are stripped, over-long titles are truncated to 120 bytes on a character boundary, and reserved Windows device names such as `CON` and `NUL` get a suffix. This prevents silently failed downloads and ZIP entries that would extract outside the target folder when a title is `..`.
 
 ## Troubleshooting
 - **Parse button doesn't appear:** confirm the page URL matches `https://www.pixiv.net/artworks/*` and the userscript is enabled.
