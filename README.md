@@ -4,11 +4,12 @@
 English | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
 ## Introduction
-PixivParse is a lightweight **Tampermonkey userscript** that parses and downloads Pixiv artworks in original quality. It injects a floating button on any Pixiv artwork page and provides:
+PixivParse is a lightweight **Tampermonkey userscript** that parses and downloads Pixiv artworks in original quality. It works by injecting a floating button on any Pixiv artwork page, and provides:
 
-- **Original image download** — fetches `original` URLs with a spoofed `Referer` to bypass hot-link protection
-- **Batch download** — download all images of a multi-page artwork at once
+- **Original image download** — all three paths (single, batch, ZIP) fetch `original` URLs through `GM_xmlhttpRequest` with a `Referer` header, bypassing hot-link protection
+- **Batch download** — images are fetched and saved one at a time, with a progress indicator and a success/failure count
 - **One-click ZIP packaging** — streams all images into a ZIP archive using [fflate](https://github.com/101arrowz/fflate), with no extra server required
+- **One unified panel** — single-page and multi-page artworks share the same layout, with buttons in three tiers of prominence
 - **Multilingual UI** — Chinese / English / Japanese with automatic detection and manual switching
 - **Dark / light theme** — follow system, dark, or light
 
@@ -36,22 +37,46 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
 
 ### Usage
 1. A floating **Parse** button appears on the right edge of the page.
-2. Click it to open the artwork gallery panel:
-   - **One-click ZIP download (N images)** — downloads all images into a single ZIP file (fetched one at a time, stored without compression).
-   - **Download all (N images)** — triggers individual file saves one by one (the browser may ask for permission to save multiple files).
+2. Click it to open the artwork gallery panel. An **action zone** sits at a fixed position above the thumbnails. Its buttons come in three tiers; the zone never moves or disappears, only *which action is primary* changes with the image count:
+
+   | Tier | Look | Multi-page (N > 1) | Single page (N = 1) |
+   |---|---|---|---|
+   | Primary | accent-filled, heavier weight | Pack as ZIP (N images) | Download original |
+   | Secondary | accent outline | Download all (N images) | Pack as ZIP |
+   | Per-item | neutral, under each thumbnail | Download image N | not rendered (the primary already does this) |
+
+   - **Pack as ZIP** — downloads all images into a single ZIP file (fetched one at a time, stored without compression).
+   - **Download all** — fetches and saves images sequentially, showing `Downloading i/N` along the way and reporting how many succeeded or failed.
    - **Download image N** — save a single image.
    - **Copy title** — copy the artwork title to clipboard.
-3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐). Both choices are remembered permanently; changing the theme does not re-render the panel or change its scroll position.
+
+   > A single-page artwork deliberately gets **no** "Download all" button: it would call the exact same function with the exact same arguments as "Download image 1", and two identical controls doing the identical thing only makes people wonder which one is correct.
+3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐); both choices are remembered across visits.
 
 ## Notes
 - **Login required.** The script uses Pixiv's `ajax` endpoints with the browser's session cookie; you must be logged in to pixiv.net for image access.
 - **ZIP packaging and memory.** The fflate library loads from CDN on demand; if the CDN is unreachable, ZIP packaging will be unavailable (individual downloads still work). Images are fetched one at a time and compression is streamed, but the **finished ZIP is held entirely in memory**, so peak usage is roughly the combined size of all original images (entries are stored, not compressed). For very large galleries — say hundreds of full-size PNGs — this can consume a lot of memory or even crash the tab; use "Download all" instead in that case.
-- **Request throttling.** ZIP packing fetches images one at a time, so only a single request is ever in flight; "Download all" staggers its saves at 300 ms intervals. Even so, please avoid repeatedly re-parsing or pulling large batches, so as not to put pressure on Pixiv.
+- **Request throttling.** Both ZIP packing and "Download all" fetch images **one at a time**, so only a single request is ever in flight. As of 1.1.2, "Download all" awaits each image sequentially instead of staggering saves at 300 ms: every image is now pulled into a Blob before the browser writes it, so firing them concurrently would keep several large images resident in memory at once and was more likely to trip the browser's multiple-download prompt. Even so, please avoid repeatedly re-parsing or pulling large batches, so as not to put pressure on Pixiv.
+- **No more silent failures.** Every download now reports its outcome — success, fallback, or failure. Failures name the cause (HTTP status / timeout / network error) on screen, with full details in the console.
 - **No server.** Everything runs in the browser. No accounts, keys, or backends required.
-- **Static images only.** Animated artworks (ugoira) cannot be parsed; the panel clearly explains why. Static illustrations and multi-page manga are both supported.
-- **Filename sanitizing.** The artwork title is used for download filenames and the ZIP's inner folder name, so characters that are illegal in filenames (`\` `/` `:` `*` `?` `"` `<` `>` `|`) and control characters are replaced with underscores, leading/trailing dots and spaces are stripped, over-long titles are truncated to 120 bytes on a character boundary, and reserved Windows device names such as `CON` and `NUL` get a suffix. This prevents silently failed downloads and ZIP entries that would extract outside the target folder when a title is `..`.
+- **Static images only.** Animated artworks (ugoira) cannot be parsed; the panel states this explicitly instead of showing an empty gallery. Static illustrations and multi-page manga are both supported.
+- **Filename sanitizing.** The artwork title is used for download filenames and the ZIP's inner folder name, so characters that are illegal in filenames (`\` `/` `:` `*` `?` `"` `<` `>` `|`) and control characters are replaced with underscores, leading/trailing dots and spaces are stripped, over-long titles are truncated to 120 bytes on a character boundary, and reserved Windows device names (`CON`, `NUL`, ...) get a suffix. This prevents silently failed downloads and ZIP entries that would extract outside the target folder when a title is something like `..`.
+
+## Configuration
+These constants near the top of the script are meant to be edited; reload the script in Tampermonkey afterwards:
+
+| Constant | Default | What it does |
+|---|---|---|
+| `SHOW_ZIP_FOR_SINGLE` | `true` | Whether single-page artworks offer "Pack as ZIP". The archive uses a `title/001.jpg` layout, which is handy if you file downloads by artwork; set to `false` if the extra folder is unwanted |
+| `FILENAME_MAX_BYTES` | `120` | Filename byte cap, leaving headroom for the `_000.png` / `.zip` suffixes |
+| `METADATA_TIMEOUT_MS` | `20000` | Timeout for the metadata endpoints, in ms |
+| `CUSTOM_HEADERS` | `Referer: https://www.pixiv.net/` | The header that defeats hot-link protection; normally left alone |
+
+The three button tiers are defined by `BTN_VARIANTS`, and their colours come from the `--pp-primary-*` / `--pp-secondary-*` variables in each theme palette — change those two places to restyle.
 
 ## Troubleshooting
+- **Clicking "Download image" does nothing (v1.1.0 and earlier):** the old single-image path called `GM_download`, which delegates to the browser's download API and has **no way to attach custom request headers**. `i.pximg.net` answers every request lacking a `Referer` with 403, so the download died server-side while Tampermonkey neither called back nor raised an error — the button just appeared inert. Single-page artworks were hit hardest, because in that case neither the ZIP nor the "Download all" button renders, leaving the broken one as the panel's only option. Fixed in 1.1.1 by fetching the bytes through `GM_xmlhttpRequest` with the `Referer` set (the same path the ZIP packer uses); please upgrade.
+- **A failure toast with a status code:** the panel now reports why. A 403 usually means the session expired — log in to pixiv.net again. A timeout means check the connection.
 - **Parse button doesn't appear:** confirm the page URL matches `https://www.pixiv.net/artworks/*` and the userscript is enabled.
 - **Images fail to load:** verify you are logged in and that `pixiv.net` is reachable in the same browser profile.
 - **ZIP packaging fails with `fflate missing`:** the CDN `@require` failed — check network or reload the page.
@@ -62,6 +87,25 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
 - Add PDF export
 - Reduce memory usage for ZIP packaging
 - Support Pixiv Novel parsing
+
+## Changelog
+
+### 1.1.2
+- Single-page and multi-page artworks now share one action zone; the `if (data.images.length > 1)` fork is gone. That fork is precisely what kept single-page artworks on a code path nobody looked at.
+- Buttons come in three tiers (primary / secondary / per-item). Previously every button looked identical and `--pp-accent` was spent on an 8px badge square next to the title.
+- Single-page artworks no longer render a per-item button that duplicated the primary action.
+- "Download all" awaits sequentially with a progress indicator and a real success/failure count; the blocking `alert()` is gone.
+- Added the `SHOW_ZIP_FOR_SINGLE` config constant.
+- New zh / en / ja strings: `downloadOriginal`, `packZipSingle`.
+
+### 1.1.1
+- **Fixed single-image downloads doing nothing.** Now fetches the bytes via `GM_xmlhttpRequest` with a `Referer` header and saves the resulting Blob, instead of relying on `GM_download`, which cannot attach request headers.
+- `GM_download` demoted to a last-resort fallback.
+- Success, fallback and failure all surface a toast — nothing fails silently any more.
+- New zh / en / ja strings: `downloadingSingle`, `dlStarted`, `dlFailed`, `dlFallback`, `batchDone`, `batchDoneWithFailed`.
+
+### 1.1.0 and earlier
+See the [commit history](https://github.com/Harry20120330/PixivParse/commits/main).
 
 ## License
 This project is licensed under the **Apache License, Version 2.0**.

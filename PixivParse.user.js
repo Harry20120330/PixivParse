@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      1.1.1
+// @version      1.2.0
 // @description  Parse and download Pixiv artworks (original images / batch ZIP).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*
@@ -43,6 +43,8 @@
 
             packZip: (n) => `一键打包下载 (${n}张 ZIP)`,
             downloadAll: (n) => `一键下载全部 (${n}张)`,
+            downloadOriginal: "下载原图",
+            packZipSingle: "打包为 ZIP",
             downloadImage: (n) => `下载图片 ${n}`,
             batchTip: "开始批量下载，请允许浏览器多次保存",
 
@@ -88,6 +90,8 @@
 
             packZip: (n) => `Pack as ZIP (${n} images)`,
             downloadAll: (n) => `Download all (${n} images)`,
+            downloadOriginal: "Download original",
+            packZipSingle: "Pack as ZIP",
             downloadImage: (n) => `Download image ${n}`,
             batchTip: "Batch download starting. Please allow multiple saves.",
 
@@ -133,6 +137,8 @@
 
             packZip: (n) => `ZIPで一括ダウンロード (${n}枚)`,
             downloadAll: (n) => `全てダウンロード (${n}枚)`,
+            downloadOriginal: "原画をダウンロード",
+            packZipSingle: "ZIPにする",
             downloadImage: (n) => `画像 ${n} をダウンロード`,
             batchTip: "一括ダウンロードを開始します。複数回の保存を許可してください。",
 
@@ -309,6 +315,18 @@
                 --pp-btn-bg: #252527;
                 --pp-btn-text: #ffffff;
                 --pp-accent: #0096fa;
+                /* Primary CTA: accent-filled. Contrast on #0096fa is 3.02:1 with
+                   white, so it carries 16px/600 text only (AA Large), never the
+                   13-14px labels used elsewhere. */
+                --pp-primary-bg: #0096fa;
+                --pp-primary-text: #ffffff;
+                --pp-primary-glow: 0 2px 10px rgba(0,150,250,0.35), inset 0 0 6px rgba(255,255,255,0.18);
+                --pp-primary-glow-pressed: 0 1px 4px rgba(0,150,250,0.28), inset 0 0 3px rgba(255,255,255,0.12);
+                /* Secondary CTA: accent outline on the card surface. */
+                --pp-secondary-text: #4ab8ff;
+                --pp-secondary-border: rgba(0,150,250,0.45);
+                --pp-secondary-glow: inset 0 0 0 1px rgba(0,150,250,0.45);
+                --pp-secondary-glow-pressed: inset 0 0 0 1px rgba(0,150,250,0.6), inset 0 0 8px rgba(0,150,250,0.12);
                 --pp-glow: inset 0 0 6px rgba(255,255,255,0.1);
                 --pp-glow-pressed: inset 0 0 3px rgba(255,255,255,0.06);
                 --pp-float-glow: inset 0 0 6px rgba(255,255,255,0.1);
@@ -329,6 +347,16 @@
                 --pp-btn-bg: #ffffff;
                 --pp-btn-text: #1c1c1e;
                 --pp-accent: #0066cc;  /* 5.57:1 on white — AA for the 14px active item label */
+                /* Primary CTA uses the darker accent so white text clears AA
+                   Large (#0066cc on white = 5.57:1, white on #0066cc = 5.57:1). */
+                --pp-primary-bg: #0066cc;
+                --pp-primary-text: #ffffff;
+                --pp-primary-glow: 0 2px 10px rgba(0,102,204,0.28), inset 0 0 0 1px rgba(0,0,0,0.06);
+                --pp-primary-glow-pressed: 0 1px 4px rgba(0,102,204,0.22), inset 0 0 0 1px rgba(0,0,0,0.08);
+                --pp-secondary-text: #0066cc;
+                --pp-secondary-border: rgba(0,102,204,0.40);
+                --pp-secondary-glow: inset 0 0 0 1px rgba(0,102,204,0.40);
+                --pp-secondary-glow-pressed: inset 0 0 0 1px rgba(0,102,204,0.6), inset 0 0 8px rgba(0,102,204,0.10);
                 --pp-glow: 0 1px 2px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(0,0,0,0.12);
                 --pp-glow-pressed: 0 0 1px rgba(0,0,0,0.08), inset 0 0 0 1px rgba(0,0,0,0.14);
                 /* The floating button sits on Pixiv's own (white) page, so it
@@ -439,6 +467,37 @@
     const borderColor = "var(--pp-border)";
     const avatarBorderColor = "var(--pp-avatar-border)";
 
+    // Button hierarchy. Every panel button used to share one flat style, so
+    // "打包 ZIP", "下载全部" and "下载图片 N" all looked equally important and
+    // --pp-accent was spent on an 8px badge. Three roles, driven by the
+    // *semantics* of the action rather than by how many images there are:
+    //   primary   — the one thing this panel is for (accent-filled)
+    //   secondary — a legitimate alternative (accent outline)
+    //   ghost     — per-item, repeats N times (the original neutral style)
+    const BTN_VARIANTS = {
+        primary: {
+            bg: "var(--pp-primary-bg)", color: "var(--pp-primary-text)",
+            glow: "var(--pp-primary-glow)", glowPressed: "var(--pp-primary-glow-pressed)",
+            fontSize: "16px", fontWeight: "600", padding: "14px"
+        },
+        secondary: {
+            bg: "transparent", color: "var(--pp-secondary-text)",
+            glow: "var(--pp-secondary-glow)", glowPressed: "var(--pp-secondary-glow-pressed)",
+            fontSize: "15px", fontWeight: "500", padding: "12px"
+        },
+        ghost: {
+            bg: btnBgColor, color: btnTextColor,
+            glow: innerGlow, glowPressed: innerGlowPressed,
+            fontSize: "15px", fontWeight: "500", padding: "11px"
+        }
+    };
+
+    // Set to false to hide "打包为 ZIP" on single-page artworks. Kept on by
+    // default: the ZIP carries a `title/001.ext` folder structure that people
+    // who archive by artwork tend to want even for a single image, and it keeps
+    // the n=1 and n>1 panels structurally identical instead of forking them.
+    const SHOW_ZIP_FOR_SINGLE = true;
+
     // ========================================
     // Manage result page modal lifecycle and cleanup
     // Ensures proper event listener removal and state reset on close
@@ -534,18 +593,20 @@
         }
     }
 
-    function createPanelButton(text, callback) {
+    // variant: "primary" | "secondary" | "ghost" (default) — see BTN_VARIANTS.
+    function createPanelButton(text, callback, variant) {
+        const v = BTN_VARIANTS[variant] || BTN_VARIANTS.ghost;
         const btn = document.createElement("button");
         btn.textContent = text;
         Object.assign(btn.style, {
             display: "block", width: "100%",
-            background: btnBgColor, color: btnTextColor,
+            background: v.bg, color: v.color,
             border: "none", outline: "none",
             borderRadius: "14px",
-            padding: "12px", fontSize: "16px", fontWeight: "500",
+            padding: v.padding, fontSize: v.fontSize, fontWeight: v.fontWeight,
             fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
-            marginBottom: "12px",
-            boxShadow: innerGlow,
+            marginBottom: variant === "ghost" ? "12px" : "10px",
+            boxShadow: v.glow,
             cursor: "pointer",
             transition: "box-shadow 0.15s, transform 0.15s",
             WebkitTapHighlightColor: "transparent"
@@ -553,11 +614,11 @@
         pressEffect(
             btn,
             () => {
-                btn.style.boxShadow = innerGlowPressed;
+                btn.style.boxShadow = v.glowPressed;
                 btn.style.transform = "scale(0.98)";
             },
             () => {
-                btn.style.boxShadow = innerGlow;
+                btn.style.boxShadow = v.glow;
                 btn.style.transform = "scale(1)";
             }
         );
@@ -1193,59 +1254,92 @@
             // folder name and the individual filenames stay consistent.
             const fileBase = sanitizeFilename(data.title, "image");
 
-            if (data.images.length > 1) {
-                content.appendChild(createPanelButton(
-                    T.packZip(data.images.length),
-                    () => packAndDownload(data.images, fileBase)
-                ));
-                content.appendChild(createPanelButton(
-                    T.downloadAll(data.images.length),
-                    async () => {
-                        if (batching) return;
-                        batching = true;
-                        const total = data.images.length;
-                        const toast = showLoadingToast(T.batchTip);
-                        let ok = 0, failed = 0;
+            // ========================================
+            // Action zone. Deliberately NOT forked on image count for its own
+            // sake: the zone always renders, always sits above the gallery, and
+            // only the *role* each action plays changes with n. The old
+            // `if (images.length > 1)` fork was what made single-page artworks a
+            // separate, untested code path — the reason the broken GM_download
+            // call survived there unnoticed.
+            // ========================================
+            const images = data.images;
+            const n = images.length;
+            const single = n === 1;
 
+            const doZip = () => packAndDownload(images, fileBase);
+
+            const doDownloadAll = async () => {
+                if (batching) return;
+                batching = true;
+                const toast = showLoadingToast(T.batchTip);
+                let ok = 0, failed = 0;
+
+                try {
+                    // Sequential rather than staggered setTimeouts: each image is
+                    // now fetched as a Blob before the browser saves it, so firing
+                    // them all at once would stack N large buffers in memory and
+                    // trip download throttling.
+                    for (let idx = 0; idx < n; idx++) {
+                        const url = images[idx];
+                        toast.textContent = T.downloading(idx + 1, n);
                         try {
-                            // Sequential rather than staggered setTimeouts: each
-                            // image is now fetched as a Blob before the browser
-                            // saves it, so firing them all at once would stack N
-                            // large buffers in memory and trip download throttling.
-                            for (let idx = 0; idx < total; idx++) {
-                                const url = data.images[idx];
-                                toast.textContent = T.downloading(idx + 1, total);
-                                try {
-                                    await downloadFile(url, `${fileBase}_${idx + 1}.${extOf(url)}`, { silent: true });
-                                    ok++;
-                                } catch (e) {
-                                    failed++;
-                                    console.error("PixivParse: batch item failed", url, e);
-                                }
-                            }
-                            toast.textContent = failed === 0
-                                ? T.batchDone(ok)
-                                : T.batchDoneWithFailed(ok, failed);
-                        } finally {
-                            // Always release the guard, otherwise every later
-                            // "download all" click on this page is ignored.
-                            batching = false;
-                            setTimeout(() => toast.remove(), 3000);
+                            await downloadFile(url, `${fileBase}_${idx + 1}.${extOf(url)}`, { silent: true });
+                            ok++;
+                        } catch (e) {
+                            failed++;
+                            console.error("PixivParse: batch item failed", url, e);
                         }
                     }
+                    toast.textContent = failed === 0
+                        ? T.batchDone(ok)
+                        : T.batchDoneWithFailed(ok, failed);
+                } finally {
+                    // Always release the guard, otherwise every later
+                    // "download all" click on this page is ignored.
+                    batching = false;
+                    setTimeout(() => toast.remove(), 3000);
+                }
+            };
+
+            if (single) {
+                // n=1: a "download all (1 image)" button would invoke the exact
+                // same function with the exact same arguments as the per-image
+                // button below it. Two identical-looking controls doing the
+                // identical thing is noise, so the per-image action is promoted
+                // to primary instead and the batch button is dropped entirely.
+                content.appendChild(createPanelButton(
+                    T.downloadOriginal,
+                    () => downloadFile(images[0], `${fileBase}_1.${extOf(images[0])}`),
+                    "primary"
                 ));
+                if (SHOW_ZIP_FOR_SINGLE) {
+                    // Kept as secondary rather than hidden: the ZIP lays the file
+                    // out as `title/001.ext`, which people archiving by artwork
+                    // want even for one page — and it keeps the n=1 panel
+                    // structurally identical to the n>1 one.
+                    content.appendChild(createPanelButton(T.packZipSingle, doZip, "secondary"));
+                }
+            } else {
+                content.appendChild(createPanelButton(T.packZip(n), doZip, "primary"));
+                content.appendChild(createPanelButton(T.downloadAll(n), doDownloadAll, "secondary"));
             }
 
-            data.images.forEach((imgUrl, idx) => {
+            // ---- Gallery ----
+            images.forEach((imgUrl, idx) => {
                 const img = document.createElement("img");
                 img.src = imgUrl;
                 img.loading = "lazy";
-                img.style.cssText = `width:100%;border-radius:16px;display:block;margin-bottom:10px;box-shadow:${innerGlow};`;
+                img.style.cssText = `width:100%;border-radius:16px;display:block;margin-bottom:${single ? "0" : "10px"};box-shadow:${innerGlow};`;
                 content.appendChild(img);
-                content.appendChild(createPanelButton(
-                    T.downloadImage(idx + 1),
-                    () => downloadFile(imgUrl, `${fileBase}_${idx+1}.${extOf(imgUrl)}`)
-                ));
+                // For a single page the primary CTA above already covers this
+                // image, so repeating it under the thumbnail is pure duplication.
+                if (!single) {
+                    content.appendChild(createPanelButton(
+                        T.downloadImage(idx + 1),
+                        () => downloadFile(imgUrl, `${fileBase}_${idx+1}.${extOf(imgUrl)}`),
+                        "ghost"
+                    ));
+                }
             });
         } else {
             // Nothing to download. An animated artwork (ugoira) yields an empty
