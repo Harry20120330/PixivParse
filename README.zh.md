@@ -87,25 +87,7 @@ PixivParse 是一个轻量级的 **Tampermonkey 油猴脚本**，可解析并以
 - 增加 PDF 输出功能
 - 优化 ZIP 打包的内存占用
 - 支持 Pixiv Novel 解析
-
-## 更新日志
-
-### 1.1.2
-- 统一单页与多页作品的操作面板，删除 `if (data.images.length > 1)` 的数量分叉 —— 正是这个分叉让单页作品长期走一条没人看的代码路径
-- 按钮分为主操作 / 备选操作 / 逐张下载三档；此前所有按钮外观完全相同，`--pp-accent` 只用在了标题旁一个 8px 的小方块上
-- 单页作品不再渲染与主操作重复的逐张下载按钮
-- 「一键下载全部」改为串行 `await`，带进度提示与成功 / 失败计数，移除阻塞式 `alert()`
-- 新增配置项 `SHOW_ZIP_FOR_SINGLE`
-- 新增中 / 英 / 日文案：`downloadOriginal`、`packZipSingle`
-
-### 1.1.1
-- **修复单张下载点击无反应。** 改用 `GM_xmlhttpRequest` 携带 `Referer` 取回 Blob 后保存，不再依赖无法附加请求头的 `GM_download`
-- `GM_download` 降级为兜底路径
-- 下载的成功 / 兜底 / 失败三种结局均有 toast 提示，不再静默失败
-- 新增中 / 英 / 日文案：`downloadingSingle`、`dlStarted`、`dlFailed`、`dlFallback`、`batchDone`、`batchDoneWithFailed`
-
-### 1.1.0 及更早
-见 [commit 历史](https://github.com/Harry20120330/PixivParse/commits/main)。
+- 阅读模式
 
 ## 许可证
 本项目采用 **Apache License, Version 2.0** 许可。

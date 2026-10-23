@@ -51,7 +51,7 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
    - **Copy title** — copy the artwork title to clipboard.
 
    > A single-page artwork deliberately gets **no** "Download all" button: it would call the exact same function with the exact same arguments as "Download image 1", and two identical controls doing the identical thing only makes people wonder which one is correct.
-3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐); both choices are remembered across visits.
+3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐). Both choices are remembered across visits, and changing the theme does not rebuild the panel or reset its scroll position.
 
 ## Notes
 - **Login required.** The script uses Pixiv's `ajax` endpoints with the browser's session cookie; you must be logged in to pixiv.net for image access.
@@ -87,25 +87,7 @@ The three button tiers are defined by `BTN_VARIANTS`, and their colours come fro
 - Add PDF export
 - Reduce memory usage for ZIP packaging
 - Support Pixiv Novel parsing
-
-## Changelog
-
-### 1.1.2
-- Single-page and multi-page artworks now share one action zone; the `if (data.images.length > 1)` fork is gone. That fork is precisely what kept single-page artworks on a code path nobody looked at.
-- Buttons come in three tiers (primary / secondary / per-item). Previously every button looked identical and `--pp-accent` was spent on an 8px badge square next to the title.
-- Single-page artworks no longer render a per-item button that duplicated the primary action.
-- "Download all" awaits sequentially with a progress indicator and a real success/failure count; the blocking `alert()` is gone.
-- Added the `SHOW_ZIP_FOR_SINGLE` config constant.
-- New zh / en / ja strings: `downloadOriginal`, `packZipSingle`.
-
-### 1.1.1
-- **Fixed single-image downloads doing nothing.** Now fetches the bytes via `GM_xmlhttpRequest` with a `Referer` header and saves the resulting Blob, instead of relying on `GM_download`, which cannot attach request headers.
-- `GM_download` demoted to a last-resort fallback.
-- Success, fallback and failure all surface a toast — nothing fails silently any more.
-- New zh / en / ja strings: `downloadingSingle`, `dlStarted`, `dlFailed`, `dlFallback`, `batchDone`, `batchDoneWithFailed`.
-
-### 1.1.0 and earlier
-See the [commit history](https://github.com/Harry20120330/PixivParse/commits/main).
+- Reading mode
 
 ## License
 This project is licensed under the **Apache License, Version 2.0**.
