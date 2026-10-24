@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      1.2.0
-// @description  Parse and download Pixiv artworks (original images / batch ZIP).
+// @version      2.0.0
+// @description  Parse and download Pixiv artworks (original images / batch ZIP / ugoira ZIP+JSON / MP4 / GIF).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*
 // @match        https://www.pixiv.net/*/artworks/*
@@ -10,10 +10,15 @@
 // @grant        GM_download
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @connect      pximg.net
+// @connect      i.pximg.net
 // @run-at       document-start
 // @license      Apache License 2.0
-// @license      MIT; includes fflate (Copyright (c) 2026 Arjun Barrett)
+// @license      MIT; includes fflate v0.8.2 (Copyright (c) 2026 Arjun Barrett)
+// @license      MIT; includes gifenc v1.0.3, inlined (Copyright (c) 2017 Matt DesLauriers)
+// @license      MIT; includes mp4-muxer v5.2.2 (Copyright (c) 2024 Vanilagy)
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
+// @require      https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js
 // @downloadURL  https://raw.githubusercontent.com/Harry20120330/PixivParse/main/PixivParse.user.js
 // @updateURL    https://raw.githubusercontent.com/Harry20120330/PixivParse/main/PixivParse.meta.js
 // @supportURL   https://github.com/Harry20120330/PixivParse/issues
@@ -66,13 +71,36 @@
 
             parseFailed: (msg) => `解析失败：${msg}`,
             requestTimeout: "请求超时，请检查网络后重试",
+            networkError: "网络连接失败，请检查网络后重试",
             httpError: (code) => `服务器返回 ${code}（可能需要重新登录，或已触发访问限制）`,
             badResponse: "服务器返回了无法解析的内容，请稍后重试",
+            emptyResponse: "服务器返回了空内容，请稍后重试",
             notArtwork: "非作品页面",
             noInfo: "无法获取作品信息",
             noImages: "无法获取图片列表",
-            ugoiraUnsupported: "这是动图作品（うごきらす / ugoira），目前仅支持静态图片，无法解析下载。",
+            ugoiraIncompleteData: "动图数据不完整：未能获取到帧数据，无法导出。",
             noDownloadableImages: "未能从该作品获取到可下载的图片。",
+
+            ugoiraInfo: (n, sec, mime) => `动图 · 共 ${n} 帧 · 约 ${sec} 秒 · ${mime === "image/png" ? "PNG 无损帧" : mime === "image/gif" ? "GIF 帧" : "JPEG 真彩帧"}`,
+            ugoiraZip: "下载 ZIP（图片 + 帧数据）",
+            ugoiraMp4: "转换为 MP4",
+            ugoiraGif: "转换为 GIF",
+            ugoiraMp4Note: "当前浏览器不支持 MP4 编码（需 Chrome/Edge 94+、Firefox 130+ 或 Safari 16.4+），已隐藏该选项",
+            ugoiraPreviewLoading: "动画预览加载中...",
+            ugoiraPreviewFailed: "预览加载失败，但不影响下载功能",
+            ugoiraFetchingZip: "正在拉取动画 ZIP...",
+            ugoiraUnpacking: "正在解包帧图...",
+            ugoiraPacking: "正在重新打包...",
+            ugoiraZipStarted: "ZIP 下载已开始（含 animation.json）",
+            ugEncoding: (i, total) => `编码中 ${i}/${total}...`,
+            mp4Started: "MP4 下载已开始",
+            gifStarted: "GIF 下载已开始",
+            mp4EncoderMissing: "浏览器缺少 VideoEncoder，无法转换 MP4",
+            mp4MuxerMissing: "mp4-muxer 库未加载，请检查网络或刷新页面",
+            gifEncMissing: "GIF 编码模块初始化失败",
+            convertFailed: (msg) => `转换失败：${msg}`,
+            ugoiraEmptyZip: "动画 ZIP 为空或下载失败",
+            ugoiraNoFramesInZip: "动画 ZIP 中未找到帧图",
         },
         en: {
             parse: "Parse",
@@ -113,13 +141,36 @@
 
             parseFailed: (msg) => `Parse failed: ${msg}`,
             requestTimeout: "The request timed out. Check your connection and try again.",
+            networkError: "The network request failed. Check your connection and try again.",
             httpError: (code) => `Server returned ${code} (you may need to log in again, or access is rate-limited)`,
             badResponse: "Server returned an unparseable response. Please try again later.",
+            emptyResponse: "Server returned an empty response. Please try again later.",
             notArtwork: "Not an artwork page",
             noInfo: "Failed to fetch artwork info",
             noImages: "Failed to fetch image list",
-            ugoiraUnsupported: "This is an animated artwork (ugoira). Only static images are supported, so it cannot be parsed or downloaded.",
+            ugoiraIncompleteData: "Incomplete ugoira data: no frame data was returned, so it cannot be exported.",
             noDownloadableImages: "No downloadable images were returned for this artwork.",
+
+            ugoiraInfo: (n, sec, mime) => `Animated · ${n} frames · ~${sec}s · ${mime === "image/png" ? "PNG lossless frames" : mime === "image/gif" ? "GIF frames" : "JPEG truecolor frames"}`,
+            ugoiraZip: "Download ZIP (frames + timing)",
+            ugoiraMp4: "Convert to MP4",
+            ugoiraGif: "Convert to GIF",
+            ugoiraMp4Note: "MP4 encoding is unavailable in this browser (needs Chrome/Edge 94+, Firefox 130+, or Safari 16.4+); the option is hidden",
+            ugoiraPreviewLoading: "Loading animation preview...",
+            ugoiraPreviewFailed: "Preview failed to load; downloads below still work",
+            ugoiraFetchingZip: "Fetching animation ZIP...",
+            ugoiraUnpacking: "Unpacking frames...",
+            ugoiraPacking: "Repacking ZIP...",
+            ugoiraZipStarted: "ZIP download started (includes animation.json)",
+            ugEncoding: (i, total) => `Encoding ${i}/${total}...`,
+            mp4Started: "MP4 download started",
+            gifStarted: "GIF download started",
+            mp4EncoderMissing: "VideoEncoder is unavailable; MP4 conversion is not possible",
+            mp4MuxerMissing: "mp4-muxer not loaded. Check network or reload the page.",
+            gifEncMissing: "GIF encoder module failed to initialize",
+            convertFailed: (msg) => `Conversion failed: ${msg}`,
+            ugoiraEmptyZip: "Ugoira ZIP is empty or failed to download",
+            ugoiraNoFramesInZip: "No frame images found in the ugoira ZIP",
         },
         ja: {
             parse: "解析",
@@ -160,13 +211,36 @@
 
             parseFailed: (msg) => `解析失敗：${msg}`,
             requestTimeout: "リクエストがタイムアウトしました。ネットワークを確認して再試行してください。",
+            networkError: "ネットワークリクエストに失敗しました。ネットワークを確認して再試行してください。",
             httpError: (code) => `サーバーが ${code} を返しました（再ログインが必要か、アクセス制限の可能性があります）`,
             badResponse: "サーバーが解析できない応答を返しました。しばらくしてから再試行してください。",
+            emptyResponse: "サーバーが空の応答を返しました。しばらくしてから再試行してください。",
             notArtwork: "作品ページではありません",
             noInfo: "作品情報の取得に失敗",
             noImages: "画像リストの取得に失敗",
-            ugoiraUnsupported: "これはうごきらす（アニメーション作品）です。現在は静止画のみ対応しているため、解析・ダウンロードできません。",
+            ugoiraIncompleteData: "うごイラデータが不完全です：フレーム情報を取得できなかったため書き出せません。",
             noDownloadableImages: "この作品からダウンロード可能な画像を取得できませんでした。",
+
+            ugoiraInfo: (n, sec, mime) => `うごイラ · 全${n}コマ · 約${sec}秒 · ${mime === "image/png" ? "PNG ロスレス" : mime === "image/gif" ? "GIF フレーム" : "JPEG フルカラー"}`,
+            ugoiraZip: "ZIPをダウンロード（画像+コマデータ）",
+            ugoiraMp4: "MP4に変換",
+            ugoiraGif: "GIFに変換",
+            ugoiraMp4Note: "このブラウザはMP4エンコードに対応していません（Chrome/Edge 94+、Firefox 130+、Safari 16.4+ が必要）",
+            ugoiraPreviewLoading: "アニメーションプレビューを読み込み中...",
+            ugoiraPreviewFailed: "プレビューの読み込みに失敗しました（ダウンロードには影響ありません）",
+            ugoiraFetchingZip: "うごイラZIPを取得中...",
+            ugoiraUnpacking: "コマ画像を展開中...",
+            ugoiraPacking: "ZIPを再パック中...",
+            ugoiraZipStarted: "ZIPダウンロード開始（animation.json 含む）",
+            ugEncoding: (i, total) => `エンコード中 ${i}/${total}...`,
+            mp4Started: "MP4ダウンロード開始",
+            gifStarted: "GIFダウンロード開始",
+            mp4EncoderMissing: "VideoEncoder がないためMP4に変換できません",
+            mp4MuxerMissing: "mp4-muxer が読み込まれていません。ネットワークを確認するかページを再読み込みしてください。",
+            gifEncMissing: "GIFエンコーダの初期化に失敗しました",
+            convertFailed: (msg) => `変換失敗：${msg}`,
+            ugoiraEmptyZip: "うごイラZIPが空か、ダウンロードに失敗しました",
+            ugoiraNoFramesInZip: "うごイラZIPにフレーム画像が見つかりません",
         },
     };
 
@@ -206,6 +280,13 @@
     let LANG = detectLang();
     let T = I18N[LANG] || I18N.en;
     let activeData = null;
+
+    // Live ugoira canvas preview players; closeResultPage() destroys them so
+    // their setTimeout loops and decoded ImageBitmaps never outlive the panel.
+    let activeUgoiraPlayers = [];
+    // Shared re-entrancy guard for the three ugoira export pipelines
+    // (ZIP repack / GIF encode / MP4 encode). Mirrors `packing` / `batching`.
+    let converting = false;
 
     function setLang(newLang) {
         if (!Object.prototype.hasOwnProperty.call(I18N, newLang)) return;
@@ -512,6 +593,11 @@
             activeResultMask.remove();
             activeResultMask = null;
         }
+        // Stop ugoira preview players: kill their frame loops and free every
+        // decoded ImageBitmap. Without this a closed panel would keep decoding
+        // frames in the background (the "ghost player" problem).
+        activeUgoiraPlayers.forEach(p => { try { p.destroy(); } catch (e) { /* ignore */ } });
+        activeUgoiraPlayers = [];
         activeData = null;
         // Restore the floating button once the result page is closed
         injectButton();
@@ -673,7 +759,7 @@
 
         try {
             const blob = await fetchImageBlob(url);
-            if (!blob || blob.size === 0) throw new Error("empty response");
+            if (!blob || blob.size === 0) throw new Error(T.emptyResponse);
             saveBlobAs(typedBlob(blob, url), filename);
             if (toast) {
                 toast.textContent = T.dlStarted(filename);
@@ -786,7 +872,15 @@
             (res) => { clearTimeout(timer); return res; },
             (err) => {
                 clearTimeout(timer);
-                throw timedOut ? new Error(T.requestTimeout) : err;
+                if (timedOut) throw new Error(T.requestTimeout);
+                // Network-level failures (offline, DNS, connection reset) reject
+                // with raw browser TypeErrors ("Failed to fetch" /
+                // "NetworkError..." / "Load failed") that leaked English into
+                // the localized alert. Wrap them; the raw error stays
+                // reachable via .cause for the console logging in catch sites.
+                const wrapped = new Error(T.networkError);
+                wrapped.cause = err;
+                throw wrapped;
             }
         );
     }
@@ -802,43 +896,127 @@
         }
     }
 
+    // "_ugoira1920x1080.zip" → [1920, 1080]; null when the URL shape changes
+    function parseUgoiraDims(url) {
+        const m = /ugoira(\d+)x(\d+)\.zip/i.exec(String(url || ""));
+        return m ? [parseInt(m[1], 10), parseInt(m[2], 10)] : null;
+    }
+
+    // illustComment arrives as HTML (<a href="/jump.php...">, <strong>,
+    // emoji <img>, …). The panel shows plain text, so strip tags safely:
+    // a detached innerHTML never executes scripts, and textContent then
+    // returns only the visible words. <br>/</p> become newlines and pixiv
+    // emoji keep their alt text so the caption stays readable.
+    function htmlToText(html) {
+        const raw = String(html || "");
+        if (!raw) return "";
+        const prepared = raw
+            .replace(/<img[^>]*\balt="([^"]*)"[^>]*>/gi, "$1")
+            .replace(/<br\s*\/?>/gi, "\n")
+            .replace(/<\/(?:p|div|li)>/gi, "\n");
+        const div = document.createElement("div");
+        div.innerHTML = prepared;
+        return (div.textContent || "")
+            .replace(/[^\S\n]+/g, " ")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+    }
+
+    // Split a /pages response body into two parallel lists:
+    //   images   — what the download buttons fetch: originals, falling back
+    //              to master1200 when pixiv does not expose the original;
+    //   previews — what the gallery <img> renders. The panel column is 520px
+    //              wide, so master1200 is already more than it can display;
+    //              loading 3000px+ originals there (a 24-page work at 3490px
+    //              each pulls ~60MB instead of ~8MB) wastes an order of
+    //              magnitude in bandwidth for zero visible difference.
+    // Entries without any usable URL are dropped from both lists so the
+    // gallery never renders <img src="undefined"> nor a download button
+    // pointing at "undefined".
+    function buildImageLists(pagesBody) {
+        const images = [];
+        const previews = [];
+        (pagesBody || []).forEach(p => {
+            if (!p || !p.urls) return;
+            const original = p.urls.original || p.urls.regular;
+            if (!original) return;
+            images.push(original);
+            previews.push(p.urls.regular || p.urls.small || original);
+        });
+        return { images, previews };
+    }
+
     async function fetchPixivData() {
         const match = location.href.match(/artworks\/(\d+)/);
         if (!match) throw new Error(T.notArtwork);
         const illustId = match[1];
 
+        // Fire both requests in parallel. For ugoira the pages response is an
+        // empty list and gets discarded; the timing table comes from a third
+        // call (ugoira_meta) once the detail response confirms the type.
         const [detailResp, pagesResp] = await Promise.all([
             fetchWithTimeout(`https://www.pixiv.net/ajax/illust/${illustId}`, METADATA_TIMEOUT_MS),
             fetchWithTimeout(`https://www.pixiv.net/ajax/illust/${illustId}/pages`, METADATA_TIMEOUT_MS)
+                .catch(err => ({ __failed: err }))
         ]);
         const detail = await readJson(detailResp, 'illust');
-        const pages = await readJson(pagesResp, 'pages');
 
         if (detail.error || !detail.body) throw new Error(detail.message || T.noInfo);
-        if (pages.error || !pages.body) throw new Error(pages.message || T.noImages);
 
         const illust = detail.body;
-        // Some entries can lack both urls; filter them out instead of rendering
-        // <img src="undefined"> and a download button pointing at "undefined".
-        const imageUrls = pages.body
-            .map(p => (p && p.urls) ? (p.urls.original || p.urls.regular) : null)
-            .filter(Boolean);
         const user = illust.user || {};
-
-        return {
+        const base = {
             title: illust.illustTitle || illustId,
-            desc: illust.illustComment || "",
+            desc: htmlToText(illust.illustComment),
             author: {
                 name: illust.userName || user.userName || user.name || "",
-                avatar: illust.userImage || user.image || "",
+                avatar: illust.userImage || user.profileImageUrl || user.image || "",
                 id: illust.userId || user.id || ""
             },
-            images: imageUrls,
-            // Pixiv illustType: 0 = illustration, 1 = manga, 2 = ugoira.
-            // The pages endpoint returns nothing for ugoira, so the panel needs
-            // to say why instead of showing an empty gallery.
-            type: Number(illust.illustType) === 2 ? "ugoira" : "image"
+            illustId: illustId
         };
+
+        // Pixiv illustType: 0 = illustration, 1 = manga, 2 = ugoira.
+        if (Number(illust.illustType) === 2) {
+            const metaResp = await fetchWithTimeout(
+                `https://www.pixiv.net/ajax/illust/${illustId}/ugoira_meta`, METADATA_TIMEOUT_MS);
+            const meta = await readJson(metaResp, 'ugoira_meta');
+            if (meta.error || !meta.body || !meta.body.frames || !meta.body.frames.length) {
+                throw new Error(meta.message || T.noImages);
+            }
+            const dims = parseUgoiraDims(meta.body.originalSrc);
+            return Object.assign({}, base, {
+                type: "ugoira",
+                zipUrl: meta.body.originalSrc,
+                previewZipUrl: meta.body.src || meta.body.originalSrc,
+                mime: meta.body.mime_type || "image/jpeg",
+                // Keep the artist's original per-frame timing: the ZIP master
+                // must be lossless and MP4/preview both honor short delays.
+                // Only impossible values are sanitized; the 20ms GIF floor is
+                // applied at GIF write time (browsers inflate GIF delays
+                // below 2 cs to 10 cs).
+                frames: meta.body.frames.map(f => {
+                    const d = Number(f.delay);
+                    return { file: f.file, delay: (Number.isFinite(d) && d > 0) ? d : 50 };
+                }),
+                width: dims ? dims[0] : 0,
+                height: dims ? dims[1] : 0
+            });
+        }
+
+        const pages = pagesResp.__failed ? null : await readJson(pagesResp, 'pages');
+        if (!pages || pages.error || !pages.body) {
+            const msg = (pages && pages.message)
+                || (pagesResp.__failed && pagesResp.__failed.message)
+                || T.noImages;
+            throw new Error(msg);
+        }
+        const built = buildImageLists(pages.body);
+        return Object.assign({}, base, {
+            type: "image",
+            images: built.images,
+            previews: built.previews
+        });
     }
 
     // ========================================
@@ -861,8 +1039,12 @@
                         reject(new Error('HTTP ' + res.status));
                     }
                 },
-                onerror: () => reject(new Error('Network error')),
-                ontimeout: () => reject(new Error('Timeout'))
+                // Same localization rule as fetchWithTimeout: these strings end
+                // up inside dlFailed / convertFailed toasts, so raw English
+                // would leak into the localized UI. "HTTP <status>" stays
+                // as-is — numeric, language-neutral.
+                onerror: () => reject(new Error(T.networkError)),
+                ontimeout: () => reject(new Error(T.requestTimeout))
             });
         });
     }
@@ -960,6 +1142,490 @@
         loading.textContent = failed > 0 ? T.zipStartedWithFailed(failed) : T.zipStarted;
         setTimeout(() => loading.remove(), 2500);
     }
+
+    // ========================================
+    // Ugoira (animated artwork) support.
+    // A ugoira is a ZIP of numbered still frames plus a per-frame delay table
+    // that lives ONLY in the ugoira_meta API response (never inside the ZIP).
+    // The panel therefore offers:
+    //   ZIP — original frames + generated animation.json (lossless master)
+    //   MP4 — hardware-encoded via WebCodecs when available (button hidden else)
+    //   GIF — pure-JS fallback that always works (vendored gifenc, no CDN)
+    // plus a canvas preview that plays the small ~600px ZIP.
+    // ========================================
+
+    // Shared by all three export paths: download + unzip the ugoira ZIP once.
+    // Returns { entries, frames, mime } with frames filtered to entries present.
+    async function fetchUgoiraFrames(data) {
+        if (typeof fflate === "undefined" || !fflate.unzipSync) throw new Error(T.fflateMissing);
+        const blob = await fetchImageBlob(data.zipUrl);
+        if (!blob || blob.size === 0) throw new Error(T.ugoiraEmptyZip);
+        const entries = fflate.unzipSync(new Uint8Array(await blob.arrayBuffer()));
+        const frames = data.frames.filter(f => entries[f.file]);
+        if (!frames.length) throw new Error(T.ugoiraNoFramesInZip);
+        return { entries: entries, frames: frames, mime: data.mime || "image/jpeg" };
+    }
+
+    function renderUgoiraPanel(data, content) {
+        const fileBase = sanitizeFilename(data.title, "ugoira");
+        const n = data.frames.length;
+        const totalMs = data.frames.reduce((s, f) => s + (f.delay || 0), 0);
+        const sec = Math.max(1, Math.round(totalMs / 1000));
+
+        const info = document.createElement("div");
+        info.textContent = T.ugoiraInfo(n, sec, data.mime);
+        info.style.cssText = `color:${subTextColor};font-size:13px;line-height:1.5;margin:0 2px 12px;`;
+        content.appendChild(info);
+
+        // ---- Action zone (same top-fixed ordering as static artworks) ----
+        content.appendChild(createPanelButton(
+            T.ugoiraZip, () => packUgoiraZip(data, fileBase), "primary"));
+
+        // MP4 is capability-gated: the slot keeps the button order stable while
+        // the async isConfigSupported() check resolves; unsupported browsers
+        // get a muted note instead of a button that would always fail.
+        const mp4Slot = document.createElement("div");
+        content.appendChild(mp4Slot);
+        fillMp4Slot(mp4Slot, data);
+
+        content.appendChild(createPanelButton(
+            T.ugoiraGif, () => encodeUgoiraToGif(data, fileBase), "secondary"));
+
+        // ---- Preview (async; degrades to a note when it cannot load) ----
+        mountUgoiraPreview(data, content);
+    }
+
+    // First H.264 codec string this platform can encode at the given size, or
+    // null. Ordered for decoder compatibility: High L4.0 already covers
+    // everything up to 1080p (1920x1080 = 8160 macroblocks, just under L4.0's
+    // 8192 budget); Main L4.0 / Baseline L3.0 (720p) satisfy constrained
+    // hardware; High L5.1 exists for oversized (>1080p) ugoira, which L4.0's
+    // macroblock budget cannot address.
+    async function pickH264Codec(width, height, bitrate, framerate) {
+        const candidates = ["avc1.640028", "avc1.4d0028", "avc1.42E01E", "avc1.640033"];
+        for (let c = 0; c < candidates.length; c++) {
+            try {
+                const s = await VideoEncoder.isConfigSupported({
+                    codec: candidates[c], width: width, height: height,
+                    bitrate: bitrate, framerate: framerate
+                });
+                if (s && s.supported) return candidates[c];
+            } catch (e) { /* try next profile */ }
+        }
+        return null;
+    }
+
+    async function fillMp4Slot(slot, data) {
+        let supported = false;
+        try {
+            if (typeof VideoEncoder !== "undefined") {
+                // H.264 needs even dimensions; probe with the even-ized size the
+                // encoder will actually be configured with. When the ZIP URL
+                // carried no WxH (regex miss → 0), probe a representative 1080p
+                // size instead of hiding the option: encodeUgoiraToMp4 derives
+                // the true dimensions from the first decoded frame and re-probes
+                // codecs there anyway, so the button stays correct.
+                const w0 = data.width > 0 ? data.width : 1920;
+                const h0 = data.height > 0 ? data.height : 1080;
+                const w = w0 - (w0 % 2);
+                const h = h0 - (h0 % 2);
+                supported = !!(await pickH264Codec(w, h, 4000000, 24));
+            }
+        } catch (e) { supported = false; }
+
+        // The panel may have been closed while probing; appending to a detached
+        // node is harmless and gets GC'd, so no further guarding is needed.
+        if (supported) {
+            slot.appendChild(createPanelButton(
+                T.ugoiraMp4,
+                () => encodeUgoiraToMp4(data, sanitizeFilename(data.title, "ugoira")),
+                "secondary"));
+        } else {
+            const note = document.createElement("div");
+            note.textContent = T.ugoiraMp4Note;
+            note.style.cssText = `color:${subTextColor};font-size:12px;line-height:1.5;margin:-2px 2px 10px;`;
+            slot.appendChild(note);
+        }
+    }
+
+    // Canvas playback of the small preview ZIP. Decoded ImageBitmaps are kept
+    // in a rolling ±1-frame window (constant ~3 MB) instead of decoding all
+    // frames up front — a 150-frame 600px animation would otherwise need
+    // ~200 MB of bitmaps. Frame timing uses a setTimeout chain driven by each
+    // frame's own delay; ugoira delays are variable, so requestAnimationFrame
+    // (locked to 60fps) cannot express them.
+    function mountUgoiraPreview(data, content) {
+        const holder = document.createElement("div");
+        holder.style.cssText = `width:100%;border-radius:16px;margin-bottom:10px;box-shadow:${innerGlow};background:${cardColor};padding:28px 0;text-align:center;color:${subTextColor};font-size:13px;`;
+        holder.textContent = T.ugoiraPreviewLoading;
+        content.appendChild(holder);
+
+        // Set once the live canvas is mounted. The watchdog's failure-note
+        // cleanup (below, +10s) must never remove a preview that arrived late
+        // but successfully — without this flag, a load finishing between 45s
+        // and 55s gets its canvas deleted 10 seconds after mounting.
+        let mountedOk = false;
+        const load = (async () => {
+            if (typeof fflate === "undefined" || !fflate.unzipSync) throw new Error(T.fflateMissing);
+            const blob = await fetchImageBlob(data.previewZipUrl);
+            if (!blob || blob.size === 0) throw new Error("empty preview ZIP");
+            const entries = fflate.unzipSync(new Uint8Array(await blob.arrayBuffer()));
+            const frames = data.frames.filter(f => entries[f.file]);
+            if (!frames.length) throw new Error("no frames in preview ZIP");
+            const mime = data.mime || "image/jpeg";
+
+            const firstBm = await createImageBitmap(new Blob([entries[frames[0].file]], { type: mime }));
+            const W = firstBm.width, H = firstBm.height;
+            firstBm.close();
+
+            const canvas = document.createElement("canvas");
+            canvas.width = W; canvas.height = H;
+            canvas.style.cssText = `width:100%;border-radius:16px;display:block;box-shadow:${innerGlow};`;
+            const ctx = canvas.getContext("2d");
+
+            let stopped = false;
+            let i = 0;
+            const cache = new Map();
+            const getBitmap = async (idx) => {
+                if (cache.has(idx)) return cache.get(idx);
+                const bm = await createImageBitmap(new Blob([entries[frames[idx].file]], { type: mime }));
+                // The panel may close while this decode is in flight; destroy()
+                // has already cleared the cache, so drop the bitmap and abort
+                // (both callers catch: the tick loop breaks, prefetch swallows)
+                // instead of re-inserting it into a cache nobody will empty.
+                if (stopped) {
+                    try { bm.close(); } catch (e) { /* ignore */ }
+                    throw new Error("preview player stopped");
+                }
+                cache.forEach((v, k) => {
+                    if (k < idx - 1 || k > idx + 1) { v.close(); cache.delete(k); }
+                });
+                cache.set(idx, bm);
+                return bm;
+            };
+
+            // Panel could have been closed while the ZIP was downloading.
+            // NOTE: check holder (already mounted), never canvas — a freshly
+            // created canvas is detached, so canvas.isConnected is always
+            // false and the preview would hang on the loading note forever.
+            if (!holder.isConnected) { stopped = true; return; }
+
+            holder.style.padding = "0";
+            holder.style.background = "transparent";
+            holder.style.boxShadow = "none";
+            holder.textContent = "";
+            holder.appendChild(canvas);
+            mountedOk = true;
+
+            // Playback loop, started AFTER the canvas enters the DOM because
+            // its condition reads canvas.isConnected. Ugoira delays are
+            // variable, so a setTimeout chain (not rAF) drives each frame.
+            (async function tick() {
+                while (!stopped && canvas.isConnected) {
+                    try {
+                        ctx.drawImage(await getBitmap(i), 0, 0);
+                    } catch (e) { break; }
+                    getBitmap((i + 1) % frames.length).catch(() => { }); // prefetch, no await
+                    await new Promise(r => setTimeout(r, frames[i].delay));
+                    i = (i + 1) % frames.length;
+                }
+            })();
+
+            activeUgoiraPlayers.push({
+                destroy() {
+                    stopped = true;
+                    cache.forEach(b => { try { b.close(); } catch (e) { /* ignore */ } });
+                    cache.clear();
+                }
+            });
+
+            return true;
+        })();
+
+        // Hard watchdog: if Tampermonkey silently queues the cross-origin ZIP
+        // request (undecided permission — its `timeout` option does not tick
+        // while queued), settle the UI instead of spinning forever. A late
+        // success still replaces the failure note with the live canvas.
+        let watchdogTimer = null;
+        Promise.race([
+            load,
+            new Promise((_, rej) => {
+                watchdogTimer = setTimeout(() =>
+                    rej(new Error("preview load watchdog (45s)")), 45000);
+            })
+        ]).catch((e) => {
+            console.error("PixivParse: ugoira preview failed", data.previewZipUrl, e);
+            holder.textContent = T.ugoiraPreviewFailed;
+            holder.title = e && e.message ? String(e.message) : String(e);
+            setTimeout(() => {
+                if (holder.parentNode && !mountedOk) holder.remove();
+            }, 10000);
+        });
+        // Drop the timer as soon as the load settles either way; otherwise it
+        // pins this whole closure (entries, frames, holder) for the full 45s
+        // even after a successful mount.
+        load.then(() => clearTimeout(watchdogTimer),
+                  () => clearTimeout(watchdogTimer));
+    }
+
+    // Primary export: original frames re-zipped together with animation.json
+    // (fflate store-level, since JPEG/PNG frames do not recompress usefully).
+    // The result is a self-describing master equal to what the artist uploaded,
+    // convertible later by ffmpeg / gallery-dl / any ugoira tool.
+    async function packUgoiraZip(data, rawBase) {
+        if (converting) return;
+        converting = true;
+        const baseName = sanitizeFilename(rawBase, "ugoira");
+        const loading = showLoadingToast(T.ugoiraFetchingZip);
+        try {
+            loading.textContent = T.ugoiraFetchingZip;
+            const got = await fetchUgoiraFrames(data);
+            // animation.json must describe THIS zip: list only frames that are
+            // actually inside it (fetchUgoiraFrames already filtered), and
+            // never ship width/height 0 when the URL regex missed — one cheap
+            // decode of the first frame gives the true dimensions, matching
+            // what the GIF/MP4 paths already do.
+            let width = data.width, height = data.height;
+            if ((!width || !height) && got.frames.length) {
+                const probe = await createImageBitmap(
+                    new Blob([got.entries[got.frames[0].file]], { type: got.mime }));
+                width = probe.width;
+                height = probe.height;
+                probe.close();
+            }
+            const meta = {
+                format: "pixiv-ugoira",
+                version: 1,
+                illustId: data.illustId,
+                title: data.title,
+                artist: data.author && data.author.name ? data.author.name : "",
+                mimeType: got.mime,
+                width: width,
+                height: height,
+                source: data.zipUrl,
+                frames: got.frames
+            };
+            loading.textContent = T.ugoiraPacking;
+            got.entries["animation.json"] = fflate.strToU8(JSON.stringify(meta, null, 2));
+            const out = fflate.zipSync(got.entries, { level: 0 });
+            saveBlobAs(new Blob([out], { type: "application/zip" }), `${baseName}_ugoira.zip`);
+            loading.textContent = T.ugoiraZipStarted;
+            setTimeout(() => loading.remove(), 2600);
+        } catch (e) {
+            console.error("PixivParse: ugoira ZIP pack failed", e);
+            loading.textContent = T.convertFailed(e && e.message ? e.message : String(e));
+            setTimeout(() => loading.remove(), 5000);
+        } finally {
+            converting = false;
+        }
+    }
+
+    // Fallback export: pure-JS GIF encode (vendored gifenc, no CDN needed).
+    // Uses one global 256-color palette sampled across the animation, so
+    // colors stay stable between frames (no palette popping).
+    async function encodeUgoiraToGif(data, rawBase) {
+        if (converting) return;
+        converting = true;
+        const baseName = sanitizeFilename(rawBase, "ugoira");
+        const loading = showLoadingToast(T.ugoiraFetchingZip);
+        try {
+            if (!GIF_ENC || !GIF_ENC.GIFEncoder) throw new Error(T.gifEncMissing);
+            const GIFEncoder = GIF_ENC.GIFEncoder;
+            const quantize = GIF_ENC.quantize;
+            const applyPalette = GIF_ENC.applyPalette;
+
+            loading.textContent = T.ugoiraFetchingZip;
+            const got = await fetchUgoiraFrames(data);
+            const frames = got.frames;
+
+            // Decode dimensions from the first frame
+            const firstBm = await createImageBitmap(new Blob([got.entries[frames[0].file]], { type: got.mime }));
+            const W = firstBm.width, H = firstBm.height;
+            firstBm.close();
+
+            // --- Sample up to 16 downscaled frames to build a global palette ---
+            const SAMPLE = 16;
+            const step = Math.max(1, Math.floor(frames.length / SAMPLE));
+            const sampCv = document.createElement("canvas");
+            const SW = Math.min(320, W);
+            const SH = Math.max(1, Math.round(H * (SW / W)));
+            sampCv.width = SW; sampCv.height = SH;
+            const sctx = sampCv.getContext("2d", { willReadFrequently: true });
+            const pooled = [];
+            for (let i = 0; i < frames.length; i += step) {
+                loading.textContent = T.ugoiraUnpacking;
+                const bm = await createImageBitmap(new Blob([got.entries[frames[i].file]], { type: got.mime }));
+                sctx.drawImage(bm, 0, 0, SW, SH);
+                bm.close();
+                const d = sctx.getImageData(0, 0, SW, SH).data;
+                for (let p = 0; p < d.length; p += 8) { // every 2nd pixel
+                    pooled.push(d[p], d[p + 1], d[p + 2], 255);
+                }
+            }
+            const palette = quantize(new Uint8Array(pooled), 256, { format: "rgb565" });
+
+            // --- Encode every frame against the shared palette ---
+            const cv = document.createElement("canvas");
+            cv.width = W; cv.height = H;
+            const ctx = cv.getContext("2d", { willReadFrequently: true });
+            const gif = GIFEncoder();
+            for (let i = 0; i < frames.length; i++) {
+                loading.textContent = T.ugEncoding(i + 1, frames.length);
+                const bm = await createImageBitmap(new Blob([got.entries[frames[i].file]], { type: got.mime }));
+                ctx.drawImage(bm, 0, 0);
+                bm.close();
+                const rgba = ctx.getImageData(0, 0, W, H).data;
+                const index = applyPalette(rgba, palette, "rgb565");
+                // The palette goes in ONLY on the first frame: gifenc writes a
+                // palette passed on later frames as a per-frame LOCAL color
+                // table — 768 bytes of duplicates per frame with one shared
+                // palette (a 100-frame ugoira would carry ~76 KB of dead
+                // weight). Frames without a local table use the global one,
+                // which is exactly the shared-palette pattern here.
+                const frameOpts = {
+                    first: i === 0,
+                    repeat: 0,          // loop forever (read on the first frame)
+                    // Browsers inflate GIF delays below 2 cs to 10 cs; floor
+                    // sub-20ms frames here so fast ugoira don't play sluggish.
+                    delay: Math.max(20, frames[i].delay)
+                };
+                if (i === 0) frameOpts.palette = palette;
+                gif.writeFrame(index, W, H, frameOpts);
+                if (i % 3 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
+            }
+            gif.finish();
+            saveBlobAs(new Blob([gif.bytes()], { type: "image/gif" }), `${baseName}.gif`);
+            loading.textContent = T.gifStarted;
+            setTimeout(() => loading.remove(), 2600);
+        } catch (e) {
+            console.error("PixivParse: GIF conversion failed", e);
+            loading.textContent = T.convertFailed(e && e.message ? e.message : String(e));
+            setTimeout(() => loading.remove(), 5000);
+        } finally {
+            converting = false;
+        }
+    }
+
+    // Best-quality export: H.264 MP4 via WebCodecs (hardware encoder) muxed by
+    // mp4-muxer. Per-frame ugoira delays map 1:1 onto VFR timestamps, so the
+    // output plays back at exactly the pace the artist authored. Frames are
+    // fed sequentially with bounded encoder queue depth — never all decoded at
+    // once — keeping memory flat regardless of frame count.
+    async function encodeUgoiraToMp4(data, rawBase) {
+        if (converting) return;
+        converting = true;
+        const baseName = sanitizeFilename(rawBase, "ugoira");
+        const loading = showLoadingToast(T.ugoiraFetchingZip);
+        let encoder = null;
+        try {
+            if (typeof VideoEncoder === "undefined") throw new Error(T.mp4EncoderMissing);
+            if (typeof Mp4Muxer === "undefined" || !Mp4Muxer.Muxer) throw new Error(T.mp4MuxerMissing);
+
+            loading.textContent = T.ugoiraFetchingZip;
+            const got = await fetchUgoiraFrames(data);
+            const frames = got.frames;
+
+            const firstBm = await createImageBitmap(new Blob([got.entries[frames[0].file]], { type: got.mime }));
+            const W0 = firstBm.width, H0 = firstBm.height;
+            firstBm.close();
+            // H.264 requires even dimensions; squeezing by <1px beats cropping
+            const W = W0 - (W0 % 2);
+            const H = H0 - (H0 % 2);
+
+            const totalMs = frames.reduce((s, f) => s + f.delay, 0);
+            const avgFps = Math.max(1, Math.round(frames.length / (totalMs / 1000)));
+            const bitrate = Math.min(25000000, Math.max(2500000, Math.round(W * H * avgFps * 0.1)));
+
+            // Pick the first H.264 profile the platform can encode with
+            const codec = await pickH264Codec(W, H, bitrate, avgFps);
+            if (!codec) throw new Error(T.mp4EncoderMissing);
+
+            const muxer = new Mp4Muxer.Muxer({
+                target: new Mp4Muxer.ArrayBufferTarget(),
+                video: { codec: "avc", width: W, height: H },
+                fastStart: "in-memory"
+            });
+            let encError = null;
+            encoder = new VideoEncoder({
+                output: (chunk, meta) => {
+                    if (!encError) {
+                        try { muxer.addVideoChunk(chunk, meta); }
+                        catch (e) { encError = e; }
+                    }
+                },
+                error: (e) => { encError = e; }
+            });
+            encoder.configure({
+                codec: codec, width: W, height: H,
+                bitrate: bitrate, framerate: avgFps,
+                avc: { format: "avc" }
+            });
+
+            const cv = document.createElement("canvas");
+            cv.width = W; cv.height = H;
+            const ctx = cv.getContext("2d");
+            const kfEvery = Math.max(1, avgFps * 2); // keyframe ~every 2s
+            let tsUs = 0;
+
+            for (let i = 0; i < frames.length; i++) {
+                if (encError) throw encError;
+                loading.textContent = T.ugEncoding(i + 1, frames.length);
+                const bm = await createImageBitmap(new Blob([got.entries[frames[i].file]], { type: got.mime }));
+                ctx.drawImage(bm, 0, 0, W, H);
+                bm.close();
+                const vf = new VideoFrame(cv, {
+                    timestamp: tsUs,
+                    duration: frames[i].delay * 1000
+                });
+                encoder.encode(vf, { keyFrame: i % kfEvery === 0 });
+                vf.close();
+                tsUs += frames[i].delay * 1000;
+                // Bound the encoder queue so memory stays flat on big ugoira
+                if (encoder.encodeQueueSize > 8) {
+                    await new Promise((resolve) => {
+                        const onDequeue = () => {
+                            encoder.removeEventListener("dequeue", onDequeue);
+                            resolve();
+                        };
+                        encoder.addEventListener("dequeue", onDequeue);
+                    });
+                }
+                if (i % 3 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
+            }
+
+            await encoder.flush();
+            encoder.close();
+            encoder = null;
+            if (encError) throw encError;
+            muxer.finalize();
+            saveBlobAs(new Blob([muxer.target.buffer], { type: "video/mp4" }), `${baseName}.mp4`);
+            loading.textContent = T.mp4Started;
+            setTimeout(() => loading.remove(), 2600);
+        } catch (e) {
+            console.error("PixivParse: MP4 conversion failed", e);
+            if (encoder) { try { encoder.close(); } catch (e2) { /* ignore */ } }
+            loading.textContent = T.convertFailed(e && e.message ? e.message : String(e));
+            setTimeout(() => loading.remove(), 5000);
+        } finally {
+            converting = false;
+        }
+    }
+
+    // gifenc v1.0.3 (vendored) — MIT License, Copyright (c) 2020 Matt DesLauriers.
+    // Inlined from dist/gifenc.esm.js (export statement removed) so the GIF
+    // fallback path works even when the CDN is unreachable. Names inside are
+    // the bundle's own minified ones; exposed below under GIF_ENC.
+    const GIF_ENC = (function () {
+        // === gifenc-vendor-start ===
+        var X={signature:"GIF",version:"89a",trailer:59,extensionIntroducer:33,applicationExtensionLabel:255,graphicControlExtensionLabel:249,imageSeparator:44,signatureSize:3,versionSize:3,globalColorTableFlagMask:128,colorResolutionMask:112,sortFlagMask:8,globalColorTableSizeMask:7,applicationIdentifierSize:8,applicationAuthCodeSize:3,disposalMethodMask:28,userInputFlagMask:2,transparentColorFlagMask:1,localColorTableFlagMask:128,interlaceFlagMask:64,idSortFlagMask:32,localColorTableSizeMask:7};function F(t=256){let e=0,s=new Uint8Array(t);return{get buffer(){return s.buffer},reset(){e=0},bytesView(){return s.subarray(0,e)},bytes(){return s.slice(0,e)},writeByte(r){n(e+1),s[e]=r,e++},writeBytes(r,o=0,i=r.length){n(e+i);for(let c=0;c<i;c++)s[e++]=r[c+o]},writeBytesView(r,o=0,i=r.byteLength){n(e+i),s.set(r.subarray(o,o+i),e),e+=i}};function n(r){var o=s.length;if(o>=r)return;var i=1024*1024;r=Math.max(r,o*(o<i?2:1.125)>>>0),o!=0&&(r=Math.max(r,256));let c=s;s=new Uint8Array(r),e>0&&s.set(c.subarray(0,e),0)}}var O=12,J=5003,lt=[0,1,3,7,15,31,63,127,255,511,1023,2047,4095,8191,16383,32767,65535];function at(t,e,s,n,r=F(512),o=new Uint8Array(256),i=new Int32Array(J),c=new Int32Array(J)){let x=i.length,a=Math.max(2,n);o.fill(0),c.fill(0),i.fill(-1);let l=0,f=0,g=a+1,h=g,b=!1,w=h,_=(1<<w)-1,u=1<<g-1,k=u+1,B=u+2,p=0,A=s[0],z=0;for(let y=x;y<65536;y*=2)++z;z=8-z,r.writeByte(a),I(u);let d=s.length;for(let y=1;y<d;y++){t:{let m=s[y],v=(m<<O)+A,M=m<<z^A;if(i[M]===v){A=c[M];break t}let V=M===0?1:x-M;for(;i[M]>=0;)if(M-=V,M<0&&(M+=x),i[M]===v){A=c[M];break t}I(A),A=m,B<1<<O?(c[M]=B++,i[M]=v):(i.fill(-1),B=u+2,b=!0,I(u))}}return I(A),I(k),r.writeByte(0),r.bytesView();function I(y){for(l&=lt[f],f>0?l|=y<<f:l=y,f+=w;f>=8;)o[p++]=l&255,p>=254&&(r.writeByte(p),r.writeBytesView(o,0,p),p=0),l>>=8,f-=8;if((B>_||b)&&(b?(w=h,_=(1<<w)-1,b=!1):(++w,_=w===O?1<<w:(1<<w)-1)),y==k){for(;f>0;)o[p++]=l&255,p>=254&&(r.writeByte(p),r.writeBytesView(o,0,p),p=0),l>>=8,f-=8;p>0&&(r.writeByte(p),r.writeBytesView(o,0,p),p=0)}}}var $=at;function D(t,e,s){return t<<8&63488|e<<2&992|s>>3}function G(t,e,s,n){return t>>4|e&240|(s&240)<<4|(n&240)<<8}function j(t,e,s){return t>>4<<8|e&240|s>>4}function R(t,e,s){return t<e?e:t>s?s:t}function T(t){return t*t}function tt(t,e,s){var n=0,r=1e100;let o=t[e],i=o.cnt,c=o.ac,x=o.rc,a=o.gc,l=o.bc;for(var f=o.fw;f!=0;f=t[f].fw){let h=t[f],b=h.cnt,w=i*b/(i+b);if(!(w>=r)){var g=0;s&&(g+=w*T(h.ac-c),g>=r)||(g+=w*T(h.rc-x),!(g>=r)&&(g+=w*T(h.gc-a),!(g>=r)&&(g+=w*T(h.bc-l),!(g>=r)&&(r=g,n=f))))}}o.err=r,o.nn=n}function Q(){return{ac:0,rc:0,gc:0,bc:0,cnt:0,nn:0,fw:0,bk:0,tm:0,mtm:0,err:0}}function ut(t,e){let s=e==="rgb444"?4096:65536,n=new Array(s),r=t.length;if(e==="rgba4444")for(let o=0;o<r;++o){let i=t[o],c=i>>24&255,x=i>>16&255,a=i>>8&255,l=i&255,f=G(l,a,x,c),g=f in n?n[f]:n[f]=Q();g.rc+=l,g.gc+=a,g.bc+=x,g.ac+=c,g.cnt++}else if(e==="rgb444")for(let o=0;o<r;++o){let i=t[o],c=i>>16&255,x=i>>8&255,a=i&255,l=j(a,x,c),f=l in n?n[l]:n[l]=Q();f.rc+=a,f.gc+=x,f.bc+=c,f.cnt++}else for(let o=0;o<r;++o){let i=t[o],c=i>>16&255,x=i>>8&255,a=i&255,l=D(a,x,c),f=l in n?n[l]:n[l]=Q();f.rc+=a,f.gc+=x,f.bc+=c,f.cnt++}return n}function H(t,e,s={}){let{format:n="rgb565",clearAlpha:r=!0,clearAlphaColor:o=0,clearAlphaThreshold:i=0,oneBitAlpha:c=!1}=s;if(!t||!t.buffer)throw new Error("quantize() expected RGBA Uint8Array data");if(!(t instanceof Uint8Array)&&!(t instanceof Uint8ClampedArray))throw new Error("quantize() expected RGBA Uint8Array data");let x=new Uint32Array(t.buffer),a=s.useSqrt!==!1,l=n==="rgba4444",f=ut(x,n),g=f.length,h=g-1,b=new Uint32Array(g+1);for(var w=0,u=0;u<g;++u){let C=f[u];if(C!=null){var _=1/C.cnt;l&&(C.ac*=_),C.rc*=_,C.gc*=_,C.bc*=_,f[w++]=C}}T(e)/w<.022&&(a=!1);for(var u=0;u<w-1;++u)f[u].fw=u+1,f[u+1].bk=u,a&&(f[u].cnt=Math.sqrt(f[u].cnt));a&&(f[u].cnt=Math.sqrt(f[u].cnt));var k,B,p;for(u=0;u<w;++u){tt(f,u,!1);var A=f[u].err;for(B=++b[0];B>1&&(p=B>>1,!(f[k=b[p]].err<=A));B=p)b[B]=k;b[B]=u}var z=w-e;for(u=0;u<z;){for(var d;;){var I=b[1];if(d=f[I],d.tm>=d.mtm&&f[d.nn].mtm<=d.tm)break;d.mtm==h?I=b[1]=b[b[0]--]:(tt(f,I,!1),d.tm=u);var A=f[I].err;for(B=1;(p=B+B)<=b[0]&&(p<b[0]&&f[b[p]].err>f[b[p+1]].err&&p++,!(A<=f[k=b[p]].err));B=p)b[B]=k;b[B]=I}var y=f[d.nn],m=d.cnt,v=y.cnt,_=1/(m+v);l&&(d.ac=_*(m*d.ac+v*y.ac)),d.rc=_*(m*d.rc+v*y.rc),d.gc=_*(m*d.gc+v*y.gc),d.bc=_*(m*d.bc+v*y.bc),d.cnt+=y.cnt,d.mtm=++u,f[y.bk].fw=y.fw,f[y.fw].bk=y.bk,y.mtm=h}let M=[];var V=0;for(u=0;;++V){let L=R(Math.round(f[u].rc),0,255),C=R(Math.round(f[u].gc),0,255),Y=R(Math.round(f[u].bc),0,255),E=255;if(l){if(E=R(Math.round(f[u].ac),0,255),c){let st=typeof c=="number"?c:127;E=E<=st?0:255}r&&E<=i&&(L=C=Y=o,E=0)}let K=l?[L,C,Y,E]:[L,C,Y];if(xt(M,K)||M.push(K),(u=f[u].fw)==0)break}return M}function xt(t,e){for(let s=0;s<t.length;s++){let n=t[s],r=n[0]===e[0]&&n[1]===e[1]&&n[2]===e[2],o=n.length>=4&&e.length>=4?n[3]===e[3]:!0;if(r&&o)return!0}return!1}function U(t,e){var s=0,n;for(n=0;n<t.length;n++){let r=t[n]-e[n];s+=r*r}return s}function P(t,e){return e>1?Math.round(t/e)*e:t}function et(t,{roundRGB:e=5,roundAlpha:s=10,oneBitAlpha:n=null}={}){let r=new Uint32Array(t.buffer);for(let o=0;o<r.length;o++){let i=r[o],c=i>>24&255,x=i>>16&255,a=i>>8&255,l=i&255;if(c=P(c,s),n){let f=typeof n=="number"?n:127;c=c<=f?0:255}l=P(l,e),a=P(a,e),x=P(x,e),r[o]=c<<24|x<<16|a<<8|l<<0}}function nt(t,e,s="rgb565"){if(!t||!t.buffer)throw new Error("quantize() expected RGBA Uint8Array data");if(!(t instanceof Uint8Array)&&!(t instanceof Uint8ClampedArray))throw new Error("quantize() expected RGBA Uint8Array data");if(e.length>256)throw new Error("applyPalette() only works with 256 colors or less");let n=new Uint32Array(t.buffer),r=n.length,o=s==="rgb444"?4096:65536,i=new Uint8Array(r),c=new Array(o),x=s==="rgba4444";if(s==="rgba4444")for(let a=0;a<r;a++){let l=n[a],f=l>>24&255,g=l>>16&255,h=l>>8&255,b=l&255,w=G(b,h,g,f),_=w in c?c[w]:c[w]=gt(b,h,g,f,e);i[a]=_}else{let a=s==="rgb444"?j:D;for(let l=0;l<r;l++){let f=n[l],g=f>>16&255,h=f>>8&255,b=f&255,w=a(b,h,g),_=w in c?c[w]:c[w]=bt(b,h,g,e);i[l]=_}}return i}function gt(t,e,s,n,r){let o=0,i=1e100;for(let c=0;c<r.length;c++){let x=r[c],a=x[3],l=q(a-n);if(l>i)continue;let f=x[0];if(l+=q(f-t),l>i)continue;let g=x[1];if(l+=q(g-e),l>i)continue;let h=x[2];l+=q(h-s),!(l>i)&&(i=l,o=c)}return o}function bt(t,e,s,n){let r=0,o=1e100;for(let i=0;i<n.length;i++){let c=n[i],x=c[0],a=q(x-t);if(a>o)continue;let l=c[1];if(a+=q(l-e),a>o)continue;let f=c[2];a+=q(f-s),!(a>o)&&(o=a,r=i)}return r}function rt(t,e,s=5){if(!t.length||!e.length)return;let n=t.map(i=>i.slice(0,3)),r=s*s,o=t[0].length;for(let i=0;i<e.length;i++){let c=e[i];c.length<o?c=[c[0],c[1],c[2],255]:c.length>o?c=c.slice(0,3):c=c.slice();let x=N(n,c.slice(0,3),U),a=x[0],l=x[1];l>0&&l<=r&&(t[a]=c)}}function q(t){return t*t}function W(t,e,s=U){let n=Infinity,r=-1;for(let o=0;o<t.length;o++){let i=t[o],c=s(e,i);c<n&&(n=c,r=o)}return r}function N(t,e,s=U){let n=Infinity,r=-1;for(let o=0;o<t.length;o++){let i=t[o],c=s(e,i);c<n&&(n=c,r=o)}return[r,n]}function ot(t,e,s=U){return t[W(t,e,s)]}function ct(t={}){let{initialCapacity:e=4096,auto:s=!0}=t,n=F(e),r=5003,o=new Uint8Array(256),i=new Int32Array(r),c=new Int32Array(r),x=!1;return{reset(){n.reset(),x=!1},finish(){n.writeByte(X.trailer)},bytes(){return n.bytes()},bytesView(){return n.bytesView()},get buffer(){return n.buffer},get stream(){return n},writeHeader:a,writeFrame(l,f,g,h={}){let{transparent:b=!1,transparentIndex:w=0,delay:_=0,palette:u=null,repeat:k=0,colorDepth:B=8,dispose:p=-1}=h,A=!1;if(s?x||(A=!0,a(),x=!0):A=Boolean(h.first),f=Math.max(0,Math.floor(f)),g=Math.max(0,Math.floor(g)),A){if(!u)throw new Error("First frame must include a { palette } option");pt(n,f,g,u,B),it(n,u),k>=0&&dt(n,k)}let z=Math.round(_/10);wt(n,p,z,b,w);let d=Boolean(u)&&!A;ht(n,f,g,d?u:null),d&&it(n,u),yt(n,l,f,g,B,o,i,c)}};function a(){ft(n,"GIF89a")}}function wt(t,e,s,n,r){t.writeByte(33),t.writeByte(249),t.writeByte(4),r<0&&(r=0,n=!1);var o,i;n?(o=1,i=2):(o=0,i=0),e>=0&&(i=e&7),i<<=2;let c=0;t.writeByte(0|i|c|o),S(t,s),t.writeByte(r||0),t.writeByte(0)}function pt(t,e,s,n,r=8){let o=1,i=0,c=Z(n.length)-1,x=o<<7|r-1<<4|i<<3|c,a=0,l=0;S(t,e),S(t,s),t.writeBytes([x,a,l])}function dt(t,e){t.writeByte(33),t.writeByte(255),t.writeByte(11),ft(t,"NETSCAPE2.0"),t.writeByte(3),t.writeByte(1),S(t,e),t.writeByte(0)}function it(t,e){let s=1<<Z(e.length);for(let n=0;n<s;n++){let r=[0,0,0];n<e.length&&(r=e[n]),t.writeByte(r[0]),t.writeByte(r[1]),t.writeByte(r[2])}}function ht(t,e,s,n){if(t.writeByte(44),S(t,0),S(t,0),S(t,e),S(t,s),n){let r=0,o=0,i=Z(n.length)-1;t.writeByte(128|r|o|0|i)}else t.writeByte(0)}function yt(t,e,s,n,r=8,o,i,c){$(s,n,e,r,t,o,i,c)}function S(t,e){t.writeByte(e&255),t.writeByte(e>>8&255)}function ft(t,e){for(var s=0;s<e.length;s++)t.writeByte(e.charCodeAt(s))}function Z(t){return Math.max(Math.ceil(Math.log2(t)),1)}var Bt=ct;
+        // === gifenc-vendor-end ===
+        return {
+            GIFEncoder: ct,
+            quantize: H,
+            applyPalette: nt,
+            prequantize: et
+        };
+    })();
 
     // ========================================
     // Generic dropdown shared by the language and theme switchers
@@ -1327,8 +1993,13 @@
             // ---- Gallery ----
             images.forEach((imgUrl, idx) => {
                 const img = document.createElement("img");
-                img.src = imgUrl;
+                // Lazy MUST be set before src: the fetch decision reads the
+                // attribute when image loading kicks off, and every gallery
+                // entry after the first sits below the fold.
                 img.loading = "lazy";
+                // master1200 preview tier — see buildImageLists. Downloads
+                // still fetch the original captured in imgUrl above.
+                img.src = (data.previews && data.previews[idx]) || imgUrl;
                 img.style.cssText = `width:100%;border-radius:16px;display:block;margin-bottom:${single ? "0" : "10px"};box-shadow:${innerGlow};`;
                 content.appendChild(img);
                 // For a single page the primary CTA above already covers this
@@ -1341,10 +2012,12 @@
                     ));
                 }
             });
+        } else if (data.type === "ugoira" && data.frames && data.frames.length > 0) {
+            // Animated artwork: canvas preview + ZIP / MP4 / GIF exports
+            renderUgoiraPanel(data, content);
         } else {
-            // Nothing to download. An animated artwork (ugoira) yields an empty
-            // pages list, so explain that case explicitly rather than leaving
-            // the user with a blank gallery.
+            // Nothing to download. A ugoira whose metadata somehow yielded no
+            // frames lands here too; explain rather than a blank gallery.
             const isUgoira = data.type === "ugoira";
             const notice = document.createElement("div");
             Object.assign(notice.style, {
@@ -1358,7 +2031,7 @@
             icon.style.cssText = "font-size:18px;line-height:1.4;flex-shrink:0;";
             const msg = document.createElement("span");
             msg.style.cssText = "flex:1;min-width:0;";
-            msg.textContent = isUgoira ? T.ugoiraUnsupported : T.noDownloadableImages;
+            msg.textContent = isUgoira ? T.ugoiraIncompleteData : T.noDownloadableImages;
             notice.appendChild(icon);
             notice.appendChild(msg);
             content.appendChild(notice);

@@ -7,6 +7,8 @@ English | [简体中文](README.zh.md) | [日本語](README.ja.md)
 PixivParse is a lightweight **Tampermonkey userscript** that parses and downloads Pixiv artworks in original quality. It works by injecting a floating button on any Pixiv artwork page, and provides:
 
 - **Original image download** — all three paths (single, batch, ZIP) fetch `original` URLs through `GM_xmlhttpRequest` with a `Referer` header, bypassing hot-link protection
+- **Lightweight gallery preview** — thumbnails use the `master1200` tier while every download path still fetches the original; multi-page preview bandwidth is reduced by roughly an order of magnitude with no visible difference at the panel width
+- **Animated artwork (ugoira) support** — canvas preview playback, with three export paths: **master ZIP** (frames + `animation.json`), **MP4** (hardware-encoded with WebCodecs and original frame timing), and **GIF** (pure-JS fallback with a global 256-color palette)
 - **Batch download** — images are fetched and saved one at a time, with a progress indicator and a success/failure count
 - **One-click ZIP packaging** — streams all images into a ZIP archive using [fflate](https://github.com/101arrowz/fflate), with no extra server required
 - **One unified panel** — single-page and multi-page artworks share the same layout, with buttons in three tiers of prominence
@@ -19,6 +21,8 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
 - `LICENSE`: Apache License 2.0 text
 - `NOTICE`: Attribution notices
 - `licenses/LICENSE-fflate.txt`: fflate MIT license
+- `licenses/LICENSE-gifenc.txt`: gifenc MIT license (bundled)
+- `licenses/LICENSE-mp4-muxer.txt`: mp4-muxer MIT license
 - `FastUpdate.sh` / `FastUpdate.ps1`: maintenance scripts that extract the UserScript metadata block from `PixivParse.user.js` to regenerate `PixivParse.meta.js` (Bash and PowerShell variants producing identical bytes)
 - `.gitattributes`: pins LF line endings so a CRLF working copy cannot make those scripts misbehave
 
@@ -50,8 +54,19 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
    - **Download image N** — save a single image.
    - **Copy title** — copy the artwork title to clipboard.
 
-   > A single-page artwork deliberately gets **no** "Download all" button: it would call the exact same function with the exact same arguments as "Download image 1", and two identical controls doing the identical thing only makes people wonder which one is correct.
 3. Use the top bar switchers to pick a theme (🌗 system / 🌙 dark / ☀️ light) and a UI language (🌐). Both choices are remembered across visits, and changing the theme does not rebuild the panel or reset its scroll position.
+
+### Animated artworks (ugoira)
+
+After parsing an animated artwork, the panel loads a **canvas preview** that follows the artist-defined per-frame durations and provides three export options:
+
+| Option | Contents | Use |
+|---|---|---|
+| Download ZIP (images + frame data) | Original frames + `animation.json` (frame duration table) | Lossless master; convert to any format with ffmpeg / gallery-dl |
+| Convert to MP4 | H.264 hardware encoding with variable-frame-rate timestamps that precisely map each frame duration | Easy to play and share on social media |
+| Convert to GIF | Pure-JS encoding (no CDN dependency) with a global 256-color palette to prevent flashing colors | Fallback path available in every browser |
+
+> The MP4 option requires `VideoEncoder` support (Chrome/Edge 94+, Firefox 130+, Safari 16.4+). Unsupported browsers hide the button and show an explanation; ZIP and GIF remain available.
 
 ## Notes
 - **Login required.** The script uses Pixiv's `ajax` endpoints with the browser's session cookie; you must be logged in to pixiv.net for image access.
@@ -59,7 +74,7 @@ PixivParse is a lightweight **Tampermonkey userscript** that parses and download
 - **Request throttling.** Both ZIP packing and "Download all" fetch images **one at a time**, so only a single request is ever in flight. As of 1.1.2, "Download all" awaits each image sequentially instead of staggering saves at 300 ms: every image is now pulled into a Blob before the browser writes it, so firing them concurrently would keep several large images resident in memory at once and was more likely to trip the browser's multiple-download prompt. Even so, please avoid repeatedly re-parsing or pulling large batches, so as not to put pressure on Pixiv.
 - **No more silent failures.** Every download now reports its outcome — success, fallback, or failure. Failures name the cause (HTTP status / timeout / network error) on screen, with full details in the console.
 - **No server.** Everything runs in the browser. No accounts, keys, or backends required.
-- **Static images only.** Animated artworks (ugoira) cannot be parsed; the panel states this explicitly instead of showing an empty gallery. Static illustrations and multi-page manga are both supported.
+- **Separate preview and download quality.** The gallery uses the `master1200` tier (the panel is 520 px wide, so larger previews make no visible difference); every download path (single, per-item, batch, and ZIP) still fetches the original file.
 - **Filename sanitizing.** The artwork title is used for download filenames and the ZIP's inner folder name, so characters that are illegal in filenames (`\` `/` `:` `*` `?` `"` `<` `>` `|`) and control characters are replaced with underscores, leading/trailing dots and spaces are stripped, over-long titles are truncated to 120 bytes on a character boundary, and reserved Windows device names (`CON`, `NUL`, ...) get a suffix. This prevents silently failed downloads and ZIP entries that would extract outside the target folder when a title is something like `..`.
 
 ## Configuration
@@ -83,11 +98,11 @@ The three button tiers are defined by `BTN_VARIANTS`, and their colours come fro
 - **Auto-update not working:** `@updateURL` points to `PixivParse.meta.js`; make sure the script was installed from the raw URL above.
 
 ## Roadmap
-- Support more artwork types (e.g. ugoira / animated illustrations)
+- Add a WebM (VP9) fallback when MP4 is unavailable
 - Add PDF export
 - Reduce memory usage for ZIP packaging
 - Support Pixiv Novel parsing
-- Reading mode
+- Add reading mode
 
 ## License
 This project is licensed under the **Apache License, Version 2.0**.

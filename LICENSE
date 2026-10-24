@@ -200,5 +200,9 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ---------------------------------------------------------------------------
-This product bundles fflate 0.8.2, which is available under the MIT license.
+This product bundles fflate v0.8.2, which is available under the MIT license.
 For details, see licenses/LICENSE-fflate.txt.
+This product bundles gifenc v1.0.3, which is available under the MIT license.
+For details, see licenses/LICENSE-gifenc.txt.
+This product bundles mp4-muxer v5.2.2, which is available under the MIT license.
+For details, see licenses/LICENSE-mp4-muxer.txt.
