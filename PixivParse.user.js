@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PixivParse
 // @namespace    https://github.com/Harry20120330/PixivParse
-// @version      2.0.0
+// @version      2.0.1
 // @description  Parse and download Pixiv artworks (original images / batch ZIP / ugoira ZIP+JSON / MP4 / GIF).
 // @author       Harry20120330
 // @match        https://www.pixiv.net/artworks/*
@@ -13,12 +13,13 @@
 // @connect      pximg.net
 // @connect      i.pximg.net
 // @run-at       document-start
+// @noframes
 // @license      Apache License 2.0
-// @license      MIT; includes fflate v0.8.2 (Copyright (c) 2026 Arjun Barrett)
+// @license      MIT; includes fflate v0.8.2 (Copyright (c) 2023 Arjun Barrett)
 // @license      MIT; includes gifenc v1.0.3, inlined (Copyright (c) 2017 Matt DesLauriers)
-// @license      MIT; includes mp4-muxer v5.2.2 (Copyright (c) 2024 Vanilagy)
-// @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
-// @require      https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js
+// @license      MIT; includes mp4-muxer v5.2.2 (Copyright (c) 2023 Vanilagy)
+// @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js#sha256=c3b34f2e9f5e74d4d7d64e01cac7a0c01954c6c406414d42185c7b53d6875ddf
+// @require      https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js#sha256=23696c3869c78ae0743a9231e6940b357aaddf563a6bc7cc5b3c58303c0b5ef5
 // @downloadURL  https://raw.githubusercontent.com/Harry20120330/PixivParse/main/PixivParse.user.js
 // @updateURL    https://raw.githubusercontent.com/Harry20120330/PixivParse/main/PixivParse.meta.js
 // @supportURL   https://github.com/Harry20120330/PixivParse/issues
@@ -285,7 +286,12 @@
     // their setTimeout loops and decoded ImageBitmaps never outlive the panel.
     let activeUgoiraPlayers = [];
     // Shared re-entrancy guard for the three ugoira export pipelines
-    // (ZIP repack / GIF encode / MP4 encode). Mirrors `packing` / `batching`.
+    // (ZIP repack / GIF encode / MP4 encode). Mutually exclusive with
+    // `packing` / `batching` and single downloads: only one download pipeline
+    // may run at a time, or concurrent ones fight over the single loading
+    // toast (showLoadingToast removes the previous instance, leaving the
+    // loser updating a detached, invisible node) and double the request
+    // load on pixiv.
     let converting = false;
 
     function setLang(newLang) {
@@ -667,14 +673,26 @@
         return toast;
     }
 
+    // Fire-and-forget outcome toast (replaces alert(), which blocked the
+    // page and visually clashed with the panel — part of unifying all
+    // user-facing feedback into the toast system).
+    function showToast(msg, ms) {
+        const toast = showLoadingToast(msg);
+        setTimeout(() => toast.remove(), ms || 2600);
+        return toast;
+    }
+
     function copyText(text) {
         if (navigator.clipboard && window.isSecureContext) {
-            navigator.clipboard.writeText(text).then(() => alert(T.copied)).catch(() => alert(T.copyFailed));
+            navigator.clipboard.writeText(text)
+                .then(() => showToast(T.copied, 1800))
+                .catch(() => showToast(T.copyFailed, 3000));
         } else {
             const ta = document.createElement("textarea");
             ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
             document.body.appendChild(ta); ta.select();
-            try { document.execCommand("copy"); alert(T.copied); } catch (e) { alert(T.copyFailed); }
+            try { document.execCommand("copy"); showToast(T.copied, 1800); }
+            catch (e) { showToast(T.copyFailed, 3000); }
             document.body.removeChild(ta);
         }
     }
@@ -755,6 +773,10 @@
     // can drive one shared progress toast and count real successes.
     async function downloadFile(url, filename, opts) {
         const silent = !!(opts && opts.silent);
+        // A single-image click while a batch pipeline is running would steal
+        // the shared toast from it (see `converting`). One download pipeline
+        // at a time; batch-internal silent calls run under `batching` itself.
+        if (!silent && (packing || batching || converting)) return false;
         const toast = silent ? null : showLoadingToast(T.downloadingSingle);
 
         try {
@@ -903,20 +925,36 @@
     }
 
     // illustComment arrives as HTML (<a href="/jump.php...">, <strong>,
-    // emoji <img>, …). The panel shows plain text, so strip tags safely:
-    // a detached innerHTML never executes scripts, and textContent then
-    // returns only the visible words. <br>/</p> become newlines and pixiv
-    // emoji keep their alt text so the caption stays readable.
+    // emoji <img>, …) authored by the artist — untrusted input. The panel
+    // shows plain text, so strip tags safely.
+    // DOMParser builds a fully inert document: no subresource loads, no
+    // script execution, no inline event handlers. innerHTML on a detached
+    // <div> (the previous approach) does NOT share that guarantee — an
+    // <img src=x onerror=...> injected through it still fires its handler
+    // (a classic XSS vector), and any <img> the old double-quoted-alt regex
+    // missed (single-quoted/unquoted/absent alt) still triggered a
+    // cross-origin request — a tracking pixel hidden in a description.
+    // <br>/</p> become newlines and pixiv emoji keep their alt text (now
+    // entity-decoded, which the raw-regex capture could not do) so the
+    // caption stays readable.
     function htmlToText(html) {
         const raw = String(html || "");
         if (!raw) return "";
         const prepared = raw
-            .replace(/<img[^>]*\balt="([^"]*)"[^>]*>/gi, "$1")
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<\/(?:p|div|li)>/gi, "\n");
-        const div = document.createElement("div");
-        div.innerHTML = prepared;
-        return (div.textContent || "")
+        let text;
+        if (typeof DOMParser === "function") {
+            const doc = new DOMParser().parseFromString(prepared, "text/html");
+            doc.querySelectorAll("img").forEach(im => {
+                im.replaceWith(doc.createTextNode(im.getAttribute("alt") || ""));
+            });
+            text = (doc.body && doc.body.textContent) || "";
+        } else {
+            // Never fall back to innerHTML; strip tags textually instead.
+            text = prepared.replace(/<[^>]*>/g, " ");
+        }
+        return text
             .replace(/[^\S\n]+/g, " ")
             .replace(/\n{3,}/g, "\n\n")
             .trim();
@@ -961,7 +999,13 @@
         ]);
         const detail = await readJson(detailResp, 'illust');
 
-        if (detail.error || !detail.body) throw new Error(detail.message || T.noInfo);
+        if (detail.error || !detail.body) {
+            // Pixiv's own message arrives in the site locale (usually
+            // Japanese); surfacing it would leak non-localized text into
+            // the UI. Keep it in the console, show the localized wording.
+            if (detail.message) console.error("PixivParse: illust detail error:", detail.message);
+            throw new Error(T.noInfo);
+        }
 
         const illust = detail.body;
         const user = illust.user || {};
@@ -981,8 +1025,20 @@
             const metaResp = await fetchWithTimeout(
                 `https://www.pixiv.net/ajax/illust/${illustId}/ugoira_meta`, METADATA_TIMEOUT_MS);
             const meta = await readJson(metaResp, 'ugoira_meta');
-            if (meta.error || !meta.body || !meta.body.frames || !meta.body.frames.length) {
-                throw new Error(meta.message || T.noImages);
+            // Server-reported failures are logged (their message arrives in
+            // the site locale, usually Japanese — surfacing it would leak
+            // non-localized text) and raise the localized generic wording.
+            // A well-formed response whose frames list is missing/empty gets
+            // the ugoira-specific wording — the generic "no image list" text
+            // was misleading here, and renderResultPage's
+            // ugoiraIncompleteData note was unreachable because this throw
+            // always fired first.
+            if (meta.error || !meta.body) {
+                if (meta.message) console.error("PixivParse: ugoira_meta error:", meta.message);
+                throw new Error(T.noInfo);
+            }
+            if (!meta.body.frames || !meta.body.frames.length) {
+                throw new Error(T.ugoiraIncompleteData);
             }
             const dims = parseUgoiraDims(meta.body.originalSrc);
             return Object.assign({}, base, {
@@ -1006,9 +1062,11 @@
 
         const pages = pagesResp.__failed ? null : await readJson(pagesResp, 'pages');
         if (!pages || pages.error || !pages.body) {
-            const msg = (pages && pages.message)
-                || (pagesResp.__failed && pagesResp.__failed.message)
-                || T.noImages;
+            // Our own wrapped fetch/timeout errors are already localized and
+            // keep flowing through; pixiv's raw message (site locale) is
+            // logged, not surfaced — same rule as the detail call above.
+            if (pages && pages.message) console.error("PixivParse: pages error:", pages.message);
+            const msg = (pagesResp.__failed && pagesResp.__failed.message) || T.noImages;
             throw new Error(msg);
         }
         const built = buildImageLists(pages.body);
@@ -1024,19 +1082,27 @@
     // Required to bypass Pixiv's hotlink protection
     // Includes timeout handling and error detection
     // ========================================
-    function fetchImageBlob(url) {
+    const IMAGE_TIMEOUT_MS = 30000;       // single images: a few MB at worst
+    const UGOIRA_ZIP_TIMEOUT_MS = 300000; // master ZIP can exceed 100 MB on
+    // slow links; a fixed 30s budget failed those deterministically
+
+    function fetchImageBlobOnce(url, timeoutMs) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: url,
                 headers: CUSTOM_HEADERS,
                 responseType: 'blob',
-                timeout: 30000,
+                timeout: timeoutMs || IMAGE_TIMEOUT_MS,
                 onload: (res) => {
                     if (res.status >= 200 && res.status < 300 && res.response instanceof Blob) {
                         resolve(res.response);
                     } else {
-                        reject(new Error('HTTP ' + res.status));
+                        // The status rides on the error so the retry layer
+                        // below can decide whether another attempt helps.
+                        const err = new Error('HTTP ' + res.status);
+                        err.status = res.status;
+                        reject(err);
                     }
                 },
                 // Same localization rule as fetchWithTimeout: these strings end
@@ -1049,6 +1115,25 @@
         });
     }
 
+    // Retry wrapper: a single 429/5xx blip (pixiv's CDN sheds load for a
+    // moment) used to permanently fail one page of a 100-page pack. Two
+    // backoff retries absorb that. 4xx (403 = login expiry) and
+    // network-level failures are NOT retried — they do not heal on their own.
+    async function fetchImageBlob(url, timeoutMs) {
+        let delay = 1200;
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await fetchImageBlobOnce(url, timeoutMs);
+            } catch (e) {
+                const retryable = e && typeof e.status === "number" &&
+                    (e.status === 429 || e.status >= 500) && attempt < 2;
+                if (!retryable) throw e;
+                await new Promise(r => setTimeout(r, delay));
+                delay *= 2;
+            }
+        }
+    }
+
     // ========================================
     // Stream images into ZIP file using fflate library
     // Downloads images sequentially and monitors success/failure
@@ -1057,10 +1142,11 @@
     // Re-entrancy guard: the panel stays open while packing, so the button is
     // clickable again. Without this, N clicks run N packs in parallel — N ZIPs,
     // N x images fetched, and every pack but the last writing progress into a
-    // detached toast node.
+    // detached toast node. Also guarded against `batching` / `converting`, so
+    // packing and batch downloading can never run concurrently.
     let packing = false;
     function packAndDownload(images, baseName) {
-        if (packing) return Promise.resolve();
+        if (packing || batching || converting) return Promise.resolve();
         packing = true;
         return runPackAndDownload(images, baseName)
             .finally(() => { packing = false; });
@@ -1078,6 +1164,12 @@
 
         const { Zip, ZipPassThrough } = fflate;
         const total = images.length;
+        // Pad width must scale with page count: padStart(3) only pads, never
+        // widens, so from page 1000 on "999.jpg" sorts lexicographically
+        // AFTER "1000.jpg", scrambling the archive order (verified: order
+        // breaks from the 100th entry on a 1001-page work). Pixiv does host
+        // 1000+ page manga uploads.
+        const pad = Math.max(3, String(total).length);
         let loaded = 0;
         let failed = 0;
 
@@ -1096,7 +1188,7 @@
         for (let i = 0; i < total; i++) {
             const url = images[i];
             const ext = extOf(url);
-            const filename = `${String(i + 1).padStart(3, '0')}.${ext}`;
+            const filename = `${String(i + 1).padStart(pad, '0')}.${ext}`;
             const entryName = `${baseName}/${filename}`;
 
             loading.textContent = T.downloading(i + 1, total);
@@ -1130,14 +1222,9 @@
             return;
         }
 
-        const zipBlob = new Blob(chunks, { type: 'application/zip' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(zipBlob);
-        a.download = baseName + '.zip';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        // Same anchor dance as every other save — one helper, not a second
+        // inlined copy of it that can drift independently.
+        saveBlobAs(new Blob(chunks, { type: 'application/zip' }), baseName + '.zip');
 
         loading.textContent = failed > 0 ? T.zipStartedWithFailed(failed) : T.zipStarted;
         setTimeout(() => loading.remove(), 2500);
@@ -1158,7 +1245,9 @@
     // Returns { entries, frames, mime } with frames filtered to entries present.
     async function fetchUgoiraFrames(data) {
         if (typeof fflate === "undefined" || !fflate.unzipSync) throw new Error(T.fflateMissing);
-        const blob = await fetchImageBlob(data.zipUrl);
+        // Master ZIP can be 100+ MB — use the relaxed budget, not the 30s
+        // default that deterministically failed slow links.
+        const blob = await fetchImageBlob(data.zipUrl, UGOIRA_ZIP_TIMEOUT_MS);
         if (!blob || blob.size === 0) throw new Error(T.ugoiraEmptyZip);
         const entries = fflate.unzipSync(new Uint8Array(await blob.arrayBuffer()));
         const frames = data.frames.filter(f => entries[f.file]);
@@ -1368,17 +1457,38 @@
                   () => clearTimeout(watchdogTimer));
     }
 
+    // Time-slice handoff for the long encode loops. The old `i % 3` sleeps
+    // were a frame-COUNT proxy for "don't starve the UI", and that proxy
+    // breaks both ways: a run of cheap frames paused three times more often
+    // than needed, while one heavy 4K frame could block input for three
+    // iterations in a row. Budgeting by wall clock instead decouples UI
+    // responsiveness from frame cost — the loop hands control back to the
+    // browser whenever UI_YIELD_MS of work has accumulated since the last
+    // pause, whatever the frames cost. 50 ms matches the Long Tasks API
+    // threshold: input latency stays well under the ~100 ms "instant" bar
+    // while the yield overhead (setTimeout clamping) caps at ~10% duty loss.
+    const UI_YIELD_MS = 50;
+    function makeUiYielder() {
+        let budgetEndsAt = 0;
+        return async function yieldToUi() {
+            if (performance.now() < budgetEndsAt) return;
+            await new Promise((r) => setTimeout(r, 0));
+            // Arm the next budget AFTER the sleep, so a slow timer wake
+            // (throttled background tab) doesn't eat into the fresh slice.
+            budgetEndsAt = performance.now() + UI_YIELD_MS;
+        };
+    }
+
     // Primary export: original frames re-zipped together with animation.json
     // (fflate store-level, since JPEG/PNG frames do not recompress usefully).
     // The result is a self-describing master equal to what the artist uploaded,
     // convertible later by ffmpeg / gallery-dl / any ugoira tool.
     async function packUgoiraZip(data, rawBase) {
-        if (converting) return;
+        if (converting || packing || batching) return;
         converting = true;
         const baseName = sanitizeFilename(rawBase, "ugoira");
         const loading = showLoadingToast(T.ugoiraFetchingZip);
         try {
-            loading.textContent = T.ugoiraFetchingZip;
             const got = await fetchUgoiraFrames(data);
             // animation.json must describe THIS zip: list only frames that are
             // actually inside it (fetchUgoiraFrames already filtered), and
@@ -1424,7 +1534,7 @@
     // Uses one global 256-color palette sampled across the animation, so
     // colors stay stable between frames (no palette popping).
     async function encodeUgoiraToGif(data, rawBase) {
-        if (converting) return;
+        if (converting || packing || batching) return;
         converting = true;
         const baseName = sanitizeFilename(rawBase, "ugoira");
         const loading = showLoadingToast(T.ugoiraFetchingZip);
@@ -1434,7 +1544,6 @@
             const quantize = GIF_ENC.quantize;
             const applyPalette = GIF_ENC.applyPalette;
 
-            loading.textContent = T.ugoiraFetchingZip;
             const got = await fetchUgoiraFrames(data);
             const frames = got.frames;
 
@@ -1469,6 +1578,7 @@
             cv.width = W; cv.height = H;
             const ctx = cv.getContext("2d", { willReadFrequently: true });
             const gif = GIFEncoder();
+            const yieldToUi = makeUiYielder();
             for (let i = 0; i < frames.length; i++) {
                 loading.textContent = T.ugEncoding(i + 1, frames.length);
                 const bm = await createImageBitmap(new Blob([got.entries[frames[i].file]], { type: got.mime }));
@@ -1491,7 +1601,7 @@
                 };
                 if (i === 0) frameOpts.palette = palette;
                 gif.writeFrame(index, W, H, frameOpts);
-                if (i % 3 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
+                await yieldToUi(); // keep the UI responsive on a time budget
             }
             gif.finish();
             saveBlobAs(new Blob([gif.bytes()], { type: "image/gif" }), `${baseName}.gif`);
@@ -1512,7 +1622,7 @@
     // fed sequentially with bounded encoder queue depth — never all decoded at
     // once — keeping memory flat regardless of frame count.
     async function encodeUgoiraToMp4(data, rawBase) {
-        if (converting) return;
+        if (converting || packing || batching) return;
         converting = true;
         const baseName = sanitizeFilename(rawBase, "ugoira");
         const loading = showLoadingToast(T.ugoiraFetchingZip);
@@ -1521,7 +1631,6 @@
             if (typeof VideoEncoder === "undefined") throw new Error(T.mp4EncoderMissing);
             if (typeof Mp4Muxer === "undefined" || !Mp4Muxer.Muxer) throw new Error(T.mp4MuxerMissing);
 
-            loading.textContent = T.ugoiraFetchingZip;
             const got = await fetchUgoiraFrames(data);
             const frames = got.frames;
 
@@ -1566,6 +1675,7 @@
             const ctx = cv.getContext("2d");
             const kfEvery = Math.max(1, avgFps * 2); // keyframe ~every 2s
             let tsUs = 0;
+            const yieldToUi = makeUiYielder();
 
             for (let i = 0; i < frames.length; i++) {
                 if (encError) throw encError;
@@ -1580,17 +1690,24 @@
                 encoder.encode(vf, { keyFrame: i % kfEvery === 0 });
                 vf.close();
                 tsUs += frames[i].delay * 1000;
-                // Bound the encoder queue so memory stays flat on big ugoira
+                // Bound the encoder queue so memory stays flat on big ugoira.
+                // Poll instead of awaiting the dequeue event: dequeue was
+                // added to the WebCodecs spec after the first VideoEncoder
+                // builds shipped, and on those an event listener never
+                // fires — the await would hang forever with `converting`
+                // latched, silently disabling all three export pipelines
+                // until a page reload. The poll also breaks out early when
+                // the encoder has already failed.
                 if (encoder.encodeQueueSize > 8) {
                     await new Promise((resolve) => {
-                        const onDequeue = () => {
-                            encoder.removeEventListener("dequeue", onDequeue);
-                            resolve();
+                        const poll = () => {
+                            if (encError || !encoder || encoder.encodeQueueSize <= 8) resolve();
+                            else setTimeout(poll, 10);
                         };
-                        encoder.addEventListener("dequeue", onDequeue);
+                        poll();
                     });
                 }
-                if (i % 3 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI alive
+                await yieldToUi(); // keep the UI responsive on a time budget
             }
 
             await encoder.flush();
@@ -1611,7 +1728,7 @@
         }
     }
 
-    // gifenc v1.0.3 (vendored) — MIT License, Copyright (c) 2020 Matt DesLauriers.
+    // gifenc v1.0.3 (vendored) — MIT License, Copyright (c) 2017 Matt DesLauriers.
     // Inlined from dist/gifenc.esm.js (export statement removed) so the GIF
     // fallback path works even when the CDN is unreachable. Names inside are
     // the bundle's own minified ones; exposed below under GIF_ENC.
@@ -1935,7 +2052,8 @@
             const doZip = () => packAndDownload(images, fileBase);
 
             const doDownloadAll = async () => {
-                if (batching) return;
+                // See packAndDownload: all download pipelines share one slot.
+                if (batching || packing || converting) return;
                 batching = true;
                 const toast = showLoadingToast(T.batchTip);
                 let ok = 0, failed = 0;
@@ -2040,6 +2158,12 @@
         mask.appendChild(content);
         document.body.appendChild(mask);
 
+        // The fixed top bar wraps to two rows on narrow screens (~390px and
+        // below), growing past the hard-coded 90px padding and clipping the
+        // top of the first card. Measure after mount so the content always
+        // starts below the real bar height.
+        mask.style.paddingTop = (topBar.offsetHeight + 24) + "px";
+
         // Hide floating button (result page takes full screen)
         removeButton();
     }
@@ -2060,7 +2184,11 @@
             renderResultPage(data);
         } catch (e) {
             loading.remove();
-            alert(T.parseFailed(e.message));
+            // Non-Error throws would surface as "parse failed: undefined";
+            // every other catch site already guards this way. Toast rather
+            // than alert(): non-blocking, consistent with every other
+            // outcome message in the panel.
+            showToast(T.parseFailed(e && e.message ? e.message : String(e)), 5000);
             console.error(e);
         } finally {
             parsing = false;
@@ -2094,21 +2222,31 @@
     }
 
     // ========================================
-    // Monitor page navigation and clean up state when URL changes
-    // Closes result modal on SPA route/hash changes, AJAX navigation, back/forward
+    // Monitor page navigation and clean up state when the artwork changes
+    // Closes the result modal on SPA path changes, AJAX navigation, back/forward
     // ========================================
-    let lastUrl = location.href;
+    // Compare the artwork identity via pathname, NOT the full href: pixiv
+    // changes query strings and #anchors during normal browsing (manga
+    // index jumps, comment anchors), and an href-only comparison closed
+    // the panel on those, throwing away rendered state the user was still
+    // looking at. A path change is the only reliable "left this page"
+    // signal in an SPA.
+    let lastPath = location.pathname;
     function checkPage() {
-        if (location.href !== lastUrl) {
-            lastUrl = location.href;
-            closeResultPage(); // Reset state when user navigates away
+        if (location.pathname !== lastPath) {
+            lastPath = location.pathname;
+            closeResultPage(); // Reset state when user leaves the artwork page
         }
     }
 
+    // 'interactive' (DOM fully parsed: <body> and <title> both exist) is all
+    // that injectStyles()/injectButton()/the MutationObserver need. Waiting
+    // for the full 'load' held the floating button hostage to pixiv's
+    // slowest third-party asset.
     function waitForPage() {
         return new Promise(resolve => {
-            if (document.readyState === 'complete') resolve();
-            else window.addEventListener('load', resolve, { once: true });
+            if (document.readyState !== 'loading') resolve();
+            else document.addEventListener('DOMContentLoaded', resolve, { once: true });
         });
     }
 
